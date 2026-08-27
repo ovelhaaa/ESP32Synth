@@ -188,3 +188,150 @@ bool ESP32Synth::isStreamPlaying(uint16_t voice) {
     }
     return false;
 }
+
+#ifdef ARDUINO
+bool ESP32Synth::startRecording(fs::FS &fs, const char* path) {
+#else
+bool ESP32Synth::startRecording(const char* path) {
+#endif
+    if (_isRecording) return false;
+
+    // Tenta alocar o Ring Buffer. Usa heap interna para acesso DMA/CPU mais rápido possível.
+    if (!_recBuffer) {
+        _recBuffer = (int16_t*)heap_caps_malloc(RECORD_BUF_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!_recBuffer) return false; // Sem memória RAM suficiente
+    }
+
+    _recordFile = SYNTH_STREAM_OPEN(); // Note: we are re-using the open macro, assuming it uses "w" or "wb" internally.
+    // **MUITO IMPORTANTE:** A macro SYNTH_STREAM_OPEN usa "r" e "rb" no topo do header.
+    // Então usaremos o nativo aqui para garantir que escreve!
+#ifdef ARDUINO
+    _recordFile = fs.open(path, "w");
+#else
+    _recordFile = fopen(path, "wb");
+#endif
+
+    if (!SYNTH_FILE_VALID(_recordFile)) {
+        heap_caps_free(_recBuffer);
+        _recBuffer = nullptr;
+        return false;
+    }
+
+    _recHead = 0;
+    _recTail = 0;
+    _recordedDataSize = 0;
+
+    // Pula 44 bytes. Escreveremos o Header correto quando a gravação acabar!
+    uint8_t dummyHeader[44] = {0};
+    SYNTH_FILE_WRITE(_recordFile, dummyHeader, 44);
+
+    _isRecording = true;
+
+    if (xTaskCreatePinnedToCore(sdWriterTask, "SynthRec", 4096, this, 1, &recordTaskHandle, SYNTH_SD_TASK_CORE) != pdPASS) {
+        _isRecording = false;
+        SYNTH_FILE_CLOSE(_recordFile);
+        heap_caps_free(_recBuffer);
+        _recBuffer = nullptr;
+        return false;
+    }
+
+    return true;
+}
+
+void ESP32Synth::stopRecording() {
+    if (!_isRecording) return;
+    _isRecording = false; // Sinaliza a task para terminar
+
+    // Aguarda a Task salvar os resíduos do buffer e escrever o header do .wav
+    while (recordTaskHandle != NULL) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+bool ESP32Synth::isRecordingActive() {
+    return _isRecording;
+}
+
+// Background Writer Task (Roda longe do áudio principal)
+void ESP32Synth::sdWriterTask(void* param) {
+    ESP32Synth* synth = (ESP32Synth*)param;
+    const int CHUNK_SAMPLES = 1024;
+    const int CHUNK_BYTES = CHUNK_SAMPLES * 2;
+    uint8_t* writeBuf = (uint8_t*)heap_caps_malloc(CHUNK_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    if (!writeBuf) {
+        synth->_isRecording = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // Grava até mandarem parar OU até o buffer de memória ser totalmente esvaziado
+    while (synth->_isRecording || synth->_recHead != synth->_recTail) {
+        uint32_t h = synth->_recHead;
+        uint32_t t = synth->_recTail;
+        uint32_t avail = (RECORD_BUF_SAMPLES + h - t) & RECORD_BUF_MASK;
+
+        // If recording stopped, flush whatever remaining samples exist.
+        uint32_t samplesToWrite = 0;
+        if (avail >= CHUNK_SAMPLES) {
+            samplesToWrite = CHUNK_SAMPLES;
+        } else if (!synth->_isRecording && avail > 0) {
+            samplesToWrite = avail; // Flush the remaining tail
+        }
+
+        if (samplesToWrite > 0) {
+            uint32_t tillEnd = RECORD_BUF_SAMPLES - t;
+            uint32_t bytesToWrite = samplesToWrite * 2;
+
+            // Lock-Free wrap-around read
+            if (samplesToWrite <= tillEnd) {
+                memcpy(writeBuf, (void*)&synth->_recBuffer[t], bytesToWrite);
+            } else {
+                memcpy(writeBuf, (void*)&synth->_recBuffer[t], tillEnd * 2);
+                memcpy(writeBuf + (tillEnd * 2), (void*)&synth->_recBuffer[0], (samplesToWrite - tillEnd) * 2);
+            }
+            synth->_recTail = (t + samplesToWrite) & RECORD_BUF_MASK;
+
+            SYNTH_FILE_WRITE(synth->_recordFile, writeBuf, bytesToWrite);
+            synth->_recordedDataSize += bytesToWrite;
+        } else {
+            if (!synth->_isRecording) break; // Finished flushing, exit loop safely
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    // --- ESCRITA DO CABEÇALHO WAV OFICIAL ---
+    uint32_t sRate = synth->_sampleRate;
+    uint32_t dataSize = synth->_recordedDataSize;
+    uint32_t fileSize = dataSize + 36;
+    uint32_t byteRate = sRate * 2; // 1 channel (Mono), 16 bits (2 bytes)
+
+    uint8_t head[44];
+    head[0] = 'R'; head[1] = 'I'; head[2] = 'F'; head[3] = 'F';
+    head[4] = (uint8_t)(fileSize); head[5] = (uint8_t)(fileSize >> 8); head[6] = (uint8_t)(fileSize >> 16); head[7] = (uint8_t)(fileSize >> 24);
+    head[8] = 'W'; head[9] = 'A'; head[10] = 'V'; head[11] = 'E';
+    head[12] = 'f'; head[13] = 'm'; head[14] = 't'; head[15] = ' ';
+    head[16] = 16; head[17] = 0; head[18] = 0; head[19] = 0;
+    head[20] = 1;  head[21] = 0; // PCM
+    head[22] = 1;  head[23] = 0; // Mono
+    head[24] = (uint8_t)(sRate); head[25] = (uint8_t)(sRate >> 8); head[26] = (uint8_t)(sRate >> 16); head[27] = (uint8_t)(sRate >> 24);
+    head[28] = (uint8_t)(byteRate); head[29] = (uint8_t)(byteRate >> 8); head[30] = (uint8_t)(byteRate >> 16); head[31] = (uint8_t)(byteRate >> 24);
+    head[32] = 2;  head[33] = 0; // BlockAlign
+    head[34] = 16; head[35] = 0; // 16 Bits
+    head[36] = 'd'; head[37] = 'a'; head[38] = 't'; head[39] = 'a';
+    head[40] = (uint8_t)(dataSize); head[41] = (uint8_t)(dataSize >> 8); head[42] = (uint8_t)(dataSize >> 16); head[43] = (uint8_t)(dataSize >> 24);
+
+    SYNTH_FILE_SEEK(synth->_recordFile, 0);
+    SYNTH_FILE_WRITE(synth->_recordFile, head, 44);
+    SYNTH_FILE_CLOSE(synth->_recordFile);
+
+    // Limpeza pesada e segura de RAM
+    heap_caps_free(writeBuf);
+    if (synth->_recBuffer) {
+        heap_caps_free(synth->_recBuffer);
+        synth->_recBuffer = nullptr;
+    }
+    
+    synth->recordTaskHandle = NULL;
+    vTaskDelete(NULL);
+}

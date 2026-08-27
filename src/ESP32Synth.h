@@ -30,6 +30,7 @@
     #define SYNTH_FILE_AVAILABLE(f)  f.available()
     #define SYNTH_FILE_SIZE(f)       f.size()
     #define SYNTH_FILE_VALID(f)      (f)
+    #define SYNTH_FILE_WRITE(f, b, s) f.write((const uint8_t*)b, s)
 
 #else
     #include <stdint.h>
@@ -65,6 +66,8 @@
     #define SYNTH_FILE_AVAILABLE(f)  esp_synth_file_avail(f)
     #define SYNTH_FILE_SIZE(f)       esp_synth_file_size(f)
     #define SYNTH_FILE_VALID(f)      (f != NULL)
+    #define SYNTH_FILE_WRITE(f, b, s) fwrite(b, 1, s, f)
+
 #endif
 
 #include "esp_heap_caps.h"
@@ -117,8 +120,9 @@ enum SynthOutputMode : uint8_t {
     SMODE_PDM,
     SMODE_I2S,
     SMODE_DAC,
-    SMODE_PWM,    // <--- New! Alternative for PDM.
-    SMODE_CUSTOM
+    SMODE_PWM,    
+    SMODE_CUSTOM,
+    SMODE_HEADLESS// <--- New! for when only recording a sound file.
 };
 
 enum WaveType : int8_t {
@@ -225,13 +229,9 @@ struct Voice {
     int64_t            slideVolCurr;
     int64_t            slideVolInc;
 
-    // ====================================================================
-    // UNION EXTREMA: Motores de Síntese Mutuamente Exclusivos (24 bytes)
-    // Agrupa buffers de Sample, Wavetables, Tracker Tick e Custom States.
-    // Mantém o motor ADSR isolado para 100% de segurança de envelope.
-    // ====================================================================
+    // union for memory economy
     union {
-        // Modo: WAVE_SAMPLE & WAVE_STREAM
+        // Mode: WAVE_SAMPLE & WAVE_STREAM
         struct {
             uint64_t samplePos1616;
             uint32_t sampleInc1616;
@@ -239,21 +239,15 @@ struct Voice {
             uint32_t sampleLoopEnd;
             uint32_t streamFracAccum;
         };
-        // Modo: WAVE_WAVETABLE
-        struct {
-            const void* wtData;
-            uint32_t    wtSize;
-        };
-        // Modo: Tracker Instrument (Sequenciador de passos)
-        struct {
-            uint32_t    controlTick;
-        };
-        // Modo: WAVE_CUSTOM (Seu parquinho de diversões O(1))
-        uint32_t cw[6]; 
+        // Mode: : WAVE_CUSTOM
+        uint32_t cw[SYNTH_CUSTOM_WAVE_STATES]; 
     };
-    // ====================================================================
 
-    // Pointers (32-bit: 4 bytes)
+    // Dedicated Wavetable Memory (Shielded from -O3 Cache Drops)
+    const void*        wtData;
+    uint32_t           wtSize;
+
+    // Pointers
     Instrument*        inst;
     Instrument_Sample* instSample;
     SynthCustomWaveCallback customWaveFunc;
@@ -263,6 +257,7 @@ struct Voice {
     uint32_t           rateDecay;
     uint32_t           rateRelease;
     uint32_t           levelSustain;
+    uint32_t           controlTick;
 
     // Outros campos de 32-bit (4 bytes)
     uint32_t           phase;
@@ -306,6 +301,7 @@ struct Voice {
     int16_t            noiseSample;
     int16_t            streamTrackId;
     int16_t            lastStreamSample;
+    int16_t            cp[SYNTH_CUSTOM_PARAMS_PER_VOICE]; // Custom parameters for WAVE_CUSTOM (Indices 0 to 3)
 
     // 8-bit, Bools e Enums (1 byte)
     EnvState           envState;
@@ -335,7 +331,7 @@ public:
     ~ESP32Synth();
 
     // --- Custom Hooks Definitions ---
-    typedef void (*SynthDSPCallback)(int32_t* mixBuffer, int numSamples);
+    typedef void (*SynthDSPCallback)(int32_t* mixBuffer, int numSamples, int16_t* dp);
     typedef void (*SynthControlCallback)();
     typedef void (*SynthCustomOutputCallback)(int16_t* samples, int numSamples);
 
@@ -349,6 +345,7 @@ public:
     bool begin(int dataPin, SynthOutputMode mode, int clkPin, int wsPin, int mclkPin, I2S_Depth i2sDepth);
 
     bool beginCustom(uint32_t sampleRate = 48000, SynthCustomOutputCallback customOutput = nullptr);
+    bool beginHeadless(uint32_t sampleRate = 48000);
 
     void setSampleRate(uint32_t rate); // EXPERIMENTAL, Use at your own risk. Changing sample rate may cause instability.
     void setControlRateHz(uint16_t hz);
@@ -377,6 +374,8 @@ public:
     void setPulseWidthBitDepth(uint8_t bits);
     void setPulseWidth(uint16_t voice, uint32_t width);
     void setCustomWave(uint16_t voice, SynthCustomWaveCallback cb);
+    void setCustomParam(uint16_t voice, uint8_t paramId, int16_t value);
+    void setDSPParam(uint8_t paramId, int16_t value);
 
     // --- Envelope ---
     void setEnv(uint16_t voice, uint16_t a, uint16_t d, uint8_t s, uint16_t r);
@@ -429,6 +428,15 @@ public:
     uint32_t getStreamPositionMs(uint16_t voice);
     uint32_t getStreamDurationMs(uint16_t voice);
     bool     isStreamPlaying(uint16_t voice);
+    
+    // --- SD Recording ---
+#ifdef ARDUINO
+    bool startRecording(fs::FS &fs, const char* path);
+#else
+    bool startRecording(const char* path);
+#endif
+    void stopRecording();
+    bool isRecordingActive();
 
     // --- Getters & Status ---
     uint32_t getFrequencyCentiHz(uint16_t voice);
@@ -457,7 +465,6 @@ public:
     SemaphoreHandle_t pwm_sema = NULL;
     void* pwm_timer = NULL;
 
-
 private:
     struct WavetableEntry {
         const void* data;
@@ -470,6 +477,22 @@ private:
     TaskHandle_t  audioTaskHandle = NULL;
     static void   sdLoaderTask(void* param);
     bool parseWavHeader(SYNTH_FILE_REF file, uint32_t& outSampleRate, uint32_t& outDataPos, uint32_t& outDataSize, uint16_t& outChannels, uint16_t& outBits);
+
+    // --- SD Recording Internals ---
+    volatile bool     _isRecording = false;
+    SYNTH_FILE        _recordFile;
+    uint32_t          _recordedDataSize = 0;
+    TaskHandle_t      recordTaskHandle = NULL;
+    int16_t*          _recBuffer = nullptr;
+    volatile uint32_t _recHead = 0;
+    volatile uint32_t _recTail = 0;
+
+    static void sdWriterTask(void* param);
+#ifdef ARDUINO
+    void writeWavHeader(fs::FS &fs, const char* path, uint32_t sampleRate, uint32_t dataSize);
+#else
+    void writeWavHeader(const char* path, uint32_t sampleRate, uint32_t dataSize);
+#endif
 
     Voice          voices[MAX_VOICES];
     WavetableEntry wavetables[MAX_WAVETABLES];
@@ -485,6 +508,7 @@ private:
     uint32_t      controlIntervalSamples;
     uint32_t      controlSampleCounter = 0;
     uint8_t       _bitcrush = 0;
+    int16_t       dp[SYNTH_CUSTOM_PARAMS_GLOBAL]; // Custom DSP parameters (Indices 0 to 3)
     void slideVolAbsolute(uint16_t voice, uint16_t startVol16, uint16_t endVol16, uint32_t durationMs);
 
     i2s_chan_handle_t tx_handle = NULL;
@@ -533,3 +557,5 @@ void ESP32Synth::setArpeggio(uint16_t voice, uint16_t durationMs, Args... freqs)
 }
 
 #endif // ESP32_SYNTH_H
+
+// yes, this is a random comment lol.

@@ -51,6 +51,32 @@
 #define STREAM_BUF_SAMPLES 2048
 // */
 
+/*
+  ====================================================================================
+   CUSTOM SYNTHESIS PARAMETERS
+   Increasing these values allows for more complex custom waves/DSPs, 
+   but increases the RAM footprint per voice. Default values are highly optimized.
+  ====================================================================================
+*/ 
+#ifndef SYNTH_CUSTOM_WAVE_STATES
+#define SYNTH_CUSTOM_WAVE_STATES      6 // cw array size (uint32_t). 6 keeps the Union at exactly 24 bytes.
+#endif
+
+#ifndef SYNTH_CUSTOM_PARAMS_PER_VOICE
+#define SYNTH_CUSTOM_PARAMS_PER_VOICE 8 // cp array size (int16_t).
+#endif
+
+#ifndef SYNTH_CUSTOM_PARAMS_GLOBAL
+#define SYNTH_CUSTOM_PARAMS_GLOBAL    4 // dp array size (int16_t).
+#endif
+
+// --- SD Recording Buffer ---
+// 16384 samples = ~32KB of RAM (Only allocated while recording!)
+// MUST be a power of 2 for extremely fast bitwise mask wrap-around.
+#ifndef RECORD_BUF_SAMPLES
+#define RECORD_BUF_SAMPLES 16384 
+#define RECORD_BUF_MASK    (RECORD_BUF_SAMPLES - 1)
+#endif
 
 /*
     DMA buffers to control latency vs polyphony:
@@ -73,20 +99,22 @@
 */
 
 #ifndef SYNTH_DMA_BUF_LEN
-#define SYNTH_DMA_BUF_LEN 512
+#define SYNTH_DMA_BUF_LEN 128
 #endif
 
 #ifndef SYNTH_DMA_BUF_COUNT
-#define SYNTH_DMA_BUF_COUNT 6
+#define SYNTH_DMA_BUF_COUNT 2
 #endif
 
 // Core Task Pinning
 #define SYNTH_SD_TASK_CORE 0 //If any library conflicts, for compatibility with other ESP32s, etc.
 #define SYNTH_AUDIO_TASK_CORE 1 //If any library conflicts, for compatibility with other ESP32s, etc. <-- Not recommended to change
 
-// ====================================================================================
-//    SINE WAVE LOOK-UP TABLE
-// ====================================================================================
+/* 
+  ====================================================================================
+      SINE WAVE LOOK-UP TABLE
+  ====================================================================================
+*/ 
 #define SINE_LUT_SIZE 4096
 #define SINE_LUT_MASK (SINE_LUT_SIZE - 1)
 #define SINE_SHIFT    20

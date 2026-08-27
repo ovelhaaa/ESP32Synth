@@ -9,10 +9,16 @@ void ESP32Synth::noteOn(uint16_t voice, uint32_t freqCentiHz, uint16_t volume) {
     vo->vol     = volume << _volShift;
     vo->active  = true;
 
+    // MEGA SAFE: Clean previous note state (prevents ADSR locks and glide leakage)
+    vo->sampleFinished  = false;
+    vo->slideFreqActive = false;
+    vo->slideVolActive  = false;
+    if (!vo->smoothEnv) vo->currEnvVal = 0; // Force immediate envelope reset if not smoothing!
+
     // Calculate phase increment
     vo->phaseInc = (uint32_t)(((uint64_t)freqCentiHz << 32) / (_sampleRate * 100));
 
-    // Force an immediate control update
+    // Force an immediate control update to snap parameters instantly
     controlSampleCounter = controlIntervalSamples;
 
     if (vo->inst) { // Tracker Instrument
@@ -49,9 +55,10 @@ void ESP32Synth::noteOn(uint16_t voice, uint32_t freqCentiHz, uint16_t volume) {
                                 ? sData->length
                                 : vo->instSample->loopEnd;
             uint32_t startOffset = (sData->length * vo->startPhase) / 360;
+            if (startOffset >= sData->length && sData->length > 0) startOffset = sData->length - 1;
             vo->samplePos1616    = vo->sampleDirection
                                    ? ((uint64_t)startOffset << 16)
-                                   : ((uint64_t)(sData->length - startOffset) << 16);
+                                   : ((uint64_t)(sData->length - 1 - startOffset) << 16);
         } else {
             vo->samplePos1616 = 0;
         }
@@ -70,9 +77,7 @@ void ESP32Synth::noteOn(uint16_t voice, uint32_t freqCentiHz, uint16_t volume) {
         } else if (vo->type == WAVE_CUSTOM) {
             if (!vo->smoothEnv) {
                 vo->phase = (uint32_t)vo->startPhase * 11930465UL;
-                // Limpa as variaveis de estado customizadas para evitar estalos de notas antigas
-                vo->cw[0] = 0; vo->cw[1] = 0; vo->cw[2] = 0;
-                vo->cw[3] = 0; vo->cw[4] = 0; vo->cw[5] = 0;
+                memset(vo->cw, 0, sizeof(vo->cw)); // O(1) memory clear at -O3
             }
         } else if (vo->type == WAVE_SAMPLE) {
             vo->sampleFinished  = false;
@@ -81,9 +86,10 @@ void ESP32Synth::noteOn(uint16_t voice, uint32_t freqCentiHz, uint16_t volume) {
 
             if (sData->data && sData->length > 0) {
                 uint32_t startOffset = (sData->length * vo->startPhase) / 360;
+                if (startOffset >= sData->length && sData->length > 0) startOffset = sData->length - 1;
                 vo->samplePos1616    = vo->sampleDirection
                                        ? ((uint64_t)startOffset << 16)
-                                       : ((uint64_t)(sData->length - startOffset) << 16);
+                                       : ((uint64_t)(sData->length - 1 - startOffset) << 16);
                 if (sData->rootFreqCentiHz > 0) {
                     uint64_t ratio1616 = ((uint64_t)freqCentiHz << 16) / sData->rootFreqCentiHz;
                     vo->sampleInc1616  = (uint32_t)((ratio1616 * sData->sampleRate) / _sampleRate);
@@ -142,11 +148,30 @@ void ESP32Synth::setFrequency(uint16_t voice, uint32_t freqCentiHz) {
     v->freqVal = freqCentiHz;
 
     // Recalculate increment
-    if (v->type == WAVE_SAMPLE && v->instSample == nullptr) {
-        const SampleData* sData = &registeredSamples[v->curSampleId];
-        if (sData->data && sData->rootFreqCentiHz > 0) {
-            uint64_t ratio1616 = ((uint64_t)freqCentiHz << 16) / sData->rootFreqCentiHz;
-            v->sampleInc1616   = (uint32_t)((ratio1616 * sData->sampleRate) / _sampleRate);
+    if (v->type == WAVE_SAMPLE) {
+        if (v->instSample != nullptr) { // Treat as a multi-zone sample instrument
+            const SampleData* sData = nullptr;
+            uint32_t root = 0;
+            for (int i = 0; i < v->instSample->numZones; i++) {
+                const SampleZone* z = &v->instSample->zones[i];
+                if (freqCentiHz >= z->lowFreq && freqCentiHz <= z->highFreq) {
+                    if (z->sampleId < MAX_SAMPLES) {
+                        sData = &registeredSamples[z->sampleId];
+                        root = (z->rootOverride > 0) ? z->rootOverride : sData->rootFreqCentiHz;
+                    }
+                    break;
+                }
+            }
+            if (sData && sData->data && root > 0) {
+                uint64_t ratio1616 = ((uint64_t)freqCentiHz << 16) / root;
+                v->sampleInc1616   = (uint32_t)((ratio1616 * sData->sampleRate) / _sampleRate);
+            }
+        } else { // Simple Sample Mode
+            const SampleData* sData = &registeredSamples[v->curSampleId];
+            if (sData->data && sData->rootFreqCentiHz > 0) {
+                uint64_t ratio1616 = ((uint64_t)freqCentiHz << 16) / sData->rootFreqCentiHz;
+                v->sampleInc1616   = (uint32_t)((ratio1616 * sData->sampleRate) / _sampleRate);
+            }
         }
     } else if (v->type == WAVE_STREAM && v->streamTrackId >= 0) {
         StreamTrack* trk = &streams[v->streamTrackId];
@@ -356,6 +381,7 @@ void ESP32Synth::setInstrument(uint16_t voice, Instrument* inst) {
     voices[voice].controlTick = 0;
     voices[voice].currEnvVal = (inst == nullptr) ? 0 : ENV_MAX;
     voices[voice].envState   = (inst == nullptr) ? ENV_IDLE : ENV_ATTACK;
+    voices[voice].smoothEnv  = (inst != nullptr); // Auto-enable smooth envelope for Tracker Instruments
 }
 
 void ESP32Synth::setInstrument(uint16_t voice, Instrument_Sample* inst) {
@@ -409,4 +435,18 @@ void ESP32Synth::setSampleLoop(uint16_t voice, LoopMode loopMode, uint32_t loopS
 
 void ESP32Synth::detachArpeggio(uint16_t voice) {
     if (voice < MAX_VOICES) voices[voice].arpActive = false;
+}
+
+// --- Custom Parameters ---
+
+void ESP32Synth::setCustomParam(uint16_t voice, uint8_t paramId, int16_t value) {
+    if (voice < MAX_VOICES && paramId < SYNTH_CUSTOM_PARAMS_PER_VOICE) {
+        voices[voice].cp[paramId] = value;
+    }
+}
+
+void ESP32Synth::setDSPParam(uint8_t paramId, int16_t value) {
+    if (paramId < SYNTH_CUSTOM_PARAMS_GLOBAL) {
+        this->dp[paramId] = value;
+    }
 }

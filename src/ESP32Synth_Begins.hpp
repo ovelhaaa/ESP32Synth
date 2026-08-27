@@ -65,6 +65,8 @@ void ESP32Synth::end() {
         voices[i].envState     = ENV_IDLE;
         voices[i].streamTrackId = -1;
     }
+    
+    stopRecording();
 
     while (audioTaskHandle  != NULL) { vTaskDelay(pdMS_TO_TICKS(2)); }
     while (streamTaskHandle != NULL) { vTaskDelay(pdMS_TO_TICKS(2)); }
@@ -293,5 +295,27 @@ bool ESP32Synth::beginCustom(uint32_t sampleRate, SynthCustomOutputCallback cust
         }
     }
 
+    return true;
+}
+
+bool ESP32Synth::beginHeadless(uint32_t sampleRate) {
+    end();
+
+    this->currentMode       = SMODE_HEADLESS;
+    this->_sampleRate       = sampleRate;
+    this->_customSampleRate = (sampleRate != 48000);
+
+    controlIntervalSamples = (_sampleRate / controlRateHz) ? (_sampleRate / controlRateHz) : 1;
+
+    for (int i = 0; i < SINE_LUT_SIZE; i++) {
+        sineLUT[i] = (int16_t)(sin(i * 2.0 * PI / (double)SINE_LUT_SIZE) * 32767.0);
+    }
+
+    this->_running = true;
+
+    // Inicia a Engine DSP em Core 1
+    if (xTaskCreatePinnedToCore(audioTask, "SynthTask", 4096, this, configMAX_PRIORITIES - 1, &audioTaskHandle, SYNTH_AUDIO_TASK_CORE) != pdPASS) {
+        return false;
+    }
     return true;
 }

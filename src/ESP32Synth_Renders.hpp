@@ -12,20 +12,31 @@
 #endif
 
 // The LoopMode switch is pulled out of the hot path.
-// It is only processed in the microsecond when the sample crosses the exact boundary.
+// Highly optimized and mathematically corrected bounds checking!
 #define ADVANCE_SAMPLE_POS \
     if (dir) { \
         pos += inc; \
         if (UNLIKELY((pos >> 16) >= lEnd)) { \
-            if (vo->sampleLoopMode == LOOP_FORWARD)  pos -= ((uint64_t)(lEnd - lStart) << 16); \
-            else if (vo->sampleLoopMode == LOOP_PINGPONG) { dir = false; pos = ((uint64_t)lEnd << 16) - (pos - ((uint64_t)lEnd << 16)); } \
+            if (vo->sampleLoopMode == LOOP_FORWARD) { \
+                pos = ((uint64_t)lStart << 16) + (pos - ((uint64_t)lEnd << 16)); \
+            } \
+            else if (vo->sampleLoopMode == LOOP_PINGPONG) { \
+                dir = false; \
+                pos = ((uint64_t)lEnd << 16) - 1 - (pos - ((uint64_t)lEnd << 16)) - inc; \
+            } \
             else { vo->sampleFinished = true; break; } \
         } \
     } else { \
-        if (LIKELY(pos >= inc)) pos -= inc; else pos = 0; \
-        if (UNLIKELY((pos >> 16) <= lStart)) { \
-            if (vo->sampleLoopMode == LOOP_PINGPONG) { dir = true; pos = ((uint64_t)lStart << 16) + (((uint64_t)lStart << 16) - pos); } \
-            else if (vo->sampleLoopMode == LOOP_REVERSE) pos += ((uint64_t)(lEnd - lStart) << 16); \
+        bool underflow = (pos < inc); \
+        pos -= inc; \
+        if (UNLIKELY(underflow || (pos >> 16) < lStart)) { \
+            if (vo->sampleLoopMode == LOOP_PINGPONG) { \
+                dir = true; \
+                pos = ((uint64_t)lStart << 16) + (((uint64_t)lStart << 16) - pos); \
+            } \
+            else if (vo->sampleLoopMode == LOOP_REVERSE) { \
+                pos = ((uint64_t)lEnd << 16) - 1 - (((uint64_t)lStart << 16) - pos) + inc; \
+            } \
             else { vo->sampleFinished = true; break; } \
         } \
     }
@@ -294,8 +305,8 @@ static FORCE_INLINE IRAM_ATTR void renderBlockBasic(Voice* __restrict__ vo, int3
                 {
                     v4i32 vVolVec = {finalVol, finalVol, finalVol, finalVol};
                     for (int i = 0; i < samples; i += 4) {
-                        v4i32 shifted = (v4i32)(vPh >> 16);
-                        shifted = (shifted << 16) >> 16;
+                        // EXTREME OPTIMIZATION: Pure Arithmetic Shift! Cuts 2 instructions per 4 samples.
+                        v4i32 shifted = (v4i32)vPh >> 16; 
                         *(v4i32*)&mixBuffer[i] += (shifted * vVolVec) >> 16;
                         vPh += vIncStep;
                     }
@@ -345,8 +356,8 @@ static FORCE_INLINE IRAM_ATTR void renderBlockBasic(Voice* __restrict__ vo, int3
                 {
                     v4i32 vVolVec = {finalVol, finalVol, finalVol, finalVol};
                     for (int i = 0; i < samples; i += 4) {
-                        v4i32 saw     = (v4i32)(vPh >> 16);
-                        saw           = (saw << 16) >> 16;
+                        // EXTREME OPTIMIZATION: Phase generated via pure arithmetic extension
+                        v4i32 saw     = (v4i32)vPh >> 16;
                         v4i32 sawMask = saw >> 31;
                         v4i32 tri     = (((saw ^ sawMask) * 2) - 32767);
                         *(v4i32*)&mixBuffer[i] += (tri * vVolVec) >> 16;
@@ -372,8 +383,7 @@ static FORCE_INLINE IRAM_ATTR void renderBlockBasic(Voice* __restrict__ vo, int3
                     v4i32 vEnvShifted = vEnv >> 14;
                     vEnvShifted      &= ~(vEnvShifted >> 31);
                     v4i32 vFinalVol   = (vEnvShifted * (int32_t)volBase) >> 14;
-                    v4i32 shifted     = (v4i32)(vPh >> 16);
-                    shifted           = (shifted << 16) >> 16;
+                    v4i32 shifted     = (v4i32)vPh >> 16; // EXTREME OPTIMIZATION
                     *(v4i32*)&mixBuffer[i] += (shifted * vFinalVol) >> 16;
                     vPh += vIncStep; vEnv += vEnvStep4;
                 }
@@ -444,8 +454,7 @@ static FORCE_INLINE IRAM_ATTR void renderBlockBasic(Voice* __restrict__ vo, int3
                     v4i32 vEnvShifted = vEnv >> 14;
                     vEnvShifted      &= ~(vEnvShifted >> 31);
                     v4i32 vFinalVol   = (vEnvShifted * (int32_t)volBase) >> 14;
-                    v4i32 saw         = (v4i32)(vPh >> 16);
-                    saw               = (saw << 16) >> 16;
+                    v4i32 saw         = (v4i32)vPh >> 16; // EXTREME OPTIMIZATION
                     v4i32 sawMask     = saw >> 31;
                     v4i32 tri         = (((saw ^ sawMask) * 2) - 32767);
                     *(v4i32*)&mixBuffer[i] += (tri * vFinalVol) >> 16;
@@ -569,90 +578,81 @@ static FORCE_INLINE IRAM_ATTR void renderBlockStream(Voice* __restrict__ vo, Str
     trk->tail           = tail;
 }
 
-// Classic ADSR Envelope Logic (Optimized)
-static FORCE_INLINE IRAM_ATTR void updateAdsrBlock(Voice* vo, int samples, int32_t& startEnv, int32_t& envStep) {
+// Classic ADSR Envelope Logic (Optimized for Sub-Block Precision)
+static FORCE_INLINE IRAM_ATTR int updateAdsrBlock(Voice* vo, int maxSamples, int32_t& startEnv, int32_t& envStep) {
     if (vo->inst) {
         startEnv       = ENV_MAX;
         vo->currEnvVal = ENV_MAX;
         envStep        = 0;
-        return;
+        return maxSamples;
     }
 
     startEnv = vo->currEnvVal;
 
     if (vo->envState == ENV_IDLE || vo->envState == ENV_SUSTAIN) {
         envStep = 0;
-        return;
+        return maxSamples;
     }
 
-    uint32_t steps  = (uint32_t)samples;
-    uint32_t target = startEnv;
+    uint32_t targetEnv = 0;
+    uint32_t rate = 0;
+    EnvState nextState = ENV_IDLE;
 
-    switch (vo->envState) {
-    case ENV_ATTACK:
-        if (vo->rateAttack >= ENV_MAX) {
-            startEnv       = ENV_MAX;
-            envStep        = 0;
-            vo->envState   = ENV_DECAY;
-        } else {
-            uint64_t totalChange = (uint64_t)vo->rateAttack * steps;
-            if ((uint64_t)ENV_MAX > target && (uint64_t)(ENV_MAX - target) > totalChange) {
-                envStep = vo->rateAttack;
-            } else {
-                envStep      = (ENV_MAX - target) / steps;
-                vo->envState = ENV_DECAY;
-            }
-        }
-        break;
-
-    case ENV_DECAY:
-        if (vo->rateDecay >= ENV_MAX) {
-            startEnv       = vo->levelSustain;
-            envStep        = 0;
-            vo->envState   = ENV_SUSTAIN;
-        } else {
-            uint64_t totalChange = (uint64_t)vo->rateDecay * steps;
-            if (target > vo->levelSustain && (uint64_t)(target - vo->levelSustain) > totalChange) {
-                envStep = -((int32_t)vo->rateDecay);
-            } else {
-                if (target < vo->levelSustain) {
-                    envStep = ((int32_t)(vo->levelSustain - target)) / (int32_t)steps;
-                } else {
-                    envStep = -((int32_t)(target - vo->levelSustain) / (int32_t)steps);
-                }
-                vo->envState = ENV_SUSTAIN;
-            }
-        }
-        break;
-
-    case ENV_RELEASE:
-        if (vo->rateRelease >= ENV_MAX) {
-            startEnv       = 0;
-            envStep        = 0;
-            vo->envState   = ENV_IDLE;
-        } else {
-            uint64_t totalChange = (uint64_t)vo->rateRelease * steps;
-            if (target > totalChange) {
-                envStep = -((int32_t)vo->rateRelease);
-            } else {
-                envStep      = -((int32_t)target / (int32_t)steps);
-                vo->envState = ENV_IDLE;
-            }
-        }
-        break;
-    default:
-        envStep = 0;
-        break;
+    if (vo->envState == ENV_ATTACK) {
+        rate = vo->rateAttack;
+        targetEnv = ENV_MAX;
+        nextState = ENV_DECAY;
+    } else if (vo->envState == ENV_DECAY) {
+        rate = vo->rateDecay;
+        targetEnv = vo->levelSustain;
+        nextState = ENV_SUSTAIN;
+    } else if (vo->envState == ENV_RELEASE) {
+        rate = vo->rateRelease;
+        targetEnv = 0;
+        nextState = ENV_IDLE;
     }
 
-    int64_t finalEnv = (int64_t)startEnv + ((int64_t)envStep * steps);
-    if (finalEnv < 0)       finalEnv = 0;
-    if (finalEnv > ENV_MAX) finalEnv = ENV_MAX;
-
-    vo->currEnvVal = (uint32_t)finalEnv;
-
-    if (vo->envState == ENV_IDLE) {
-        vo->currEnvVal = 0;
-        vo->active     = false;
+    if (rate >= ENV_MAX) {
+        startEnv       = targetEnv;
+        envStep        = 0;
+        vo->envState   = nextState;
+        vo->currEnvVal = targetEnv;
+        if (nextState == ENV_IDLE) vo->active = false;
+        return maxSamples;
     }
+
+    // Calcula exatamente quantas amostras faltam para esse estágio terminar
+    uint32_t absDiff = (startEnv > targetEnv) ? (startEnv - targetEnv) : (targetEnv - startEnv);
+    if (UNLIKELY(rate == 0)) rate = 1;
+    uint32_t samplesNeeded = absDiff / rate;
+    if (absDiff % rate != 0) samplesNeeded++; // Arredonda para cima
+
+    int samplesToProcess = maxSamples;
+    bool stageFinished = false;
+
+    if (samplesNeeded <= (uint32_t)maxSamples) {
+        samplesToProcess = (int)samplesNeeded;
+        stageFinished = true;
+    }
+
+    // SIMD SHIELDING: Força o número de amostras a ser um múltiplo de 4 
+    // para NUNCA corromper ou escrever fora da memória nos loops do renderBlock!
+    samplesToProcess = (samplesToProcess + 3) & ~3;
+    if (samplesToProcess > maxSamples) samplesToProcess = maxSamples;
+    if (samplesToProcess == 0) samplesToProcess = 4;
+
+    envStep = (vo->envState == ENV_ATTACK) ? (int32_t)rate : -((int32_t)rate);
+
+    if (stageFinished) {
+        vo->currEnvVal = targetEnv;
+        vo->envState   = nextState;
+        if (nextState == ENV_IDLE) vo->active = false;
+    } else {
+        int64_t finalEnv = (int64_t)startEnv + ((int64_t)envStep * samplesToProcess);
+        if (finalEnv < 0) finalEnv = 0;
+        if (finalEnv > ENV_MAX) finalEnv = ENV_MAX;
+        vo->currEnvVal = (uint32_t)finalEnv;
+    }
+
+    return samplesToProcess; // Retorna quantos samples renderizar antes de reavaliar o envelope
 }
