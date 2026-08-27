@@ -1,11 +1,11 @@
-# ESP32Synth v2.4.5 — Highly Optimized Bare-Metal Synth Engine for Embedded Polyphony
+# ESP32Synth v2.4.4 — Highly Optimized Bare-Metal Synth Engine for Embedded Polyphony
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/danilogcrf2-oss/ESP32Synth/main/banner.jpg" alt="ESP32Synth banner" width="100%">
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.4.5-green.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.4.4-green.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-ESP32%20%7C%20ESP32--S3%20%7C%20ESP32--S2%20%7C%20ESP32--C3%20%7C%20ESP32--C6-orange.svg" alt="Platform">
   <img src="https://img.shields.io/badge/framework-Arduino%20%7C%20ESP--IDF-blue.svg" alt="Framework">
   <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="License">
@@ -13,7 +13,7 @@
 
 A high-performance, polyphonic audio synthesis library for the ESP32 series (including S3, S2, C3, C6, etc.). Engineered for extreme bare-metal optimization, low-latency rendering, massive voice density, custom DSP hooks, and direct filesystem/SD-card streaming. Dual-framework support ensures compilation in both Arduino IDE and VS Code (PlatformIO) under either Arduino or native ESP-IDF.
 
-### ✨ What's New in v2.4.5
+### ✨ What's New in v2.4.4
 * **Xtensa LX7 SIMD Vectorization (`v4i32`)**: The engine now natively leverages 128-bit SIMD instructions on the ESP32-S3, processing 4 audio samples in a single clock cycle. *Result: 64 active voices consume only ~19% of the ESP32-S3 CPU.*
 * **Bulletproof Memory Boundaries**: Utterly precise sub-sample bouncing mathematics for `LOOP_REVERSE` and `LOOP_PINGPONG`. Zero memory leaks, zero array out-of-bounds crashes, absolute stability.
 * **`ESP32Synth_Patches.hpp` Included**: A suite of highly optimized, 100% Fixed-Point algorithms, including branchless PolyBLEP Anti-Aliasing and 24-bit/64-bit Dynamic RBJ Biquad Filters.
@@ -60,7 +60,7 @@ To implement these blocks, you must maintain this performance philosophy: **use 
 
 ## 2. PlatformIO (VS Code) & ESP-IDF Integration
 
-With **v2.4.5**, PlatformIO integration is native. File system abstractions are unified, allowing you to run identical synth files under both Arduino and ESP-IDF frameworks.
+With **v2.4.4**, PlatformIO integration is native. File system abstractions are unified, allowing you to run identical synth files under both Arduino and ESP-IDF frameworks.
 
 ### PlatformIO Configuration (`platformio.ini`)
 
@@ -304,7 +304,7 @@ void write_bluetooth_packet(uint8_t *stream_buffer, int buffer_length) {
 
 ## 10. Fixed-Point Advanced DSP & Custom Synthesis Blocks
 
-Inject complex physical effects and waveshapes into the engine. With v2.4.5, we include `ESP32Synth_Patches.hpp` offering professional anti-aliased oscillators and filters.
+Inject complex physical effects and waveshapes into the engine. With v2.4.4, we include `ESP32Synth_Patches.hpp` offering professional anti-aliased oscillators and filters.
 
 ### Using the Built-In Biquad Filter Patch
 Replaces standard raw oscillators with PolyBLEP anti-aliased waveforms pushed through a 24-bit fixed-point resonant State Variable (RBJ) Biquad filter:
