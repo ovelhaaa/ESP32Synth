@@ -1,11 +1,11 @@
-# ESP32Synth v2.4.5 — Highly Optimized Bare-Metal Synth Engine for Embedded Polyphony
+# ESP32Synth v2.4.6 — Highly Optimized Bare-Metal Synth Engine for Embedded Polyphony
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/danilogcrf2-oss/ESP32Synth/main/banner.jpg" alt="ESP32Synth banner" width="100%">
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.4.5-green.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.4.6-green.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-ESP32%20%7C%20ESP32--S3%20%7C%20ESP32--S2%20%7C%20ESP32--C3%20%7C%20ESP32--C6-orange.svg" alt="Platform">
   <img src="https://img.shields.io/badge/framework-Arduino%20%7C%20ESP--IDF-blue.svg" alt="Framework">
   <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="License">
@@ -13,7 +13,7 @@
 
 A high-performance, polyphonic audio synthesis library for the ESP32 series (including S3, S2, C3, C6, etc.). Engineered for extreme bare-metal optimization, low-latency rendering, massive voice density, custom DSP hooks, and direct filesystem/SD-card streaming. Dual-framework support ensures compilation in both Arduino IDE and VS Code (PlatformIO) under either Arduino or native ESP-IDF.
 
-### ✨ What's New in v2.4.5
+### ✨ What's New in v2.4.6
 * **The FLT Engine (Float Translator)**: Write DSP code using intuitive floating-point logic (`fip`) while the engine translates it into blazing-fast Q8.24 32-bit hardware integers at compile time! Zero CPU cost for float literals.
 * **Wavetable Baker (`FLT_Baker`)**: Pre-calculate complex mathematical waveforms into RAM during setup using float math. Choose 16-bit, 8-bit, or 4-bit depths to save memory footprint.
 * **Expanded DSP Patches**: New highly optimized instruments and FX added to `ESP32Synth_Patches.hpp`, including Karplus-Strong Guitar (`EKS_Guitar`), Hammond B3 Organ, FM Synthesis, Leslie Speaker FX, and a full Pedalboard FX chain.
@@ -61,7 +61,7 @@ To implement these blocks natively, you must maintain this performance philosoph
 
 ## 2. PlatformIO (VS Code) & ESP-IDF Integration
 
-With **v2.4.5**, PlatformIO integration is native. File system abstractions are unified, allowing you to run identical synth files under both Arduino and ESP-IDF frameworks.
+With **v2.4.6**, PlatformIO integration is native. File system abstractions are unified, allowing you to run identical synth files under both Arduino and ESP-IDF frameworks.
 
 ### PlatformIO Configuration (`platformio.ini`)
 
@@ -305,7 +305,7 @@ void write_bluetooth_packet(uint8_t *stream_buffer, int buffer_length) {
 
 ## 10. Fixed-Point Advanced DSP & Custom Synthesis Blocks
 
-Inject complex physical effects and waveshapes into the engine. With **v2.4.5**, we include `ESP32Synth_Patches.hpp` offering professional anti-aliased oscillators, instruments, and complex FX chains!
+Inject complex physical effects and waveshapes into the engine. With **v2.4.6**, we include `ESP32Synth_Patches.hpp` offering professional anti-aliased oscillators, instruments, and complex FX chains!
 
 ### Using the Built-In Patches
 Replaces standard raw oscillators with robust algorithms like the PolyBLEP anti-aliased 24-bit fixed-point resonant State Variable (RBJ) Biquad filter, Karplus-Strong Strings, or Hammond B3 simulations:
@@ -371,7 +371,7 @@ void IRAM_ATTR myPluckOscillator(Voice* vo, int32_t* mixBuffer, int samples, int
 
 ---
 
-## 11. The FLT Engine: Write Floats, Run Integers (NEW in v2.4.5)
+## 11. The FLT Engine: Write Floats, Run Integers (NEW in v2.4.6)
 
 The `fip` (Fixed-Point) class acts as a transparent translator. It allows you to write custom DSP algorithms using familiar floating-point syntax (`fip::sin()`, `0.5f`), while the C++ compiler translates everything into **ultra-fast Q8.24 32-bit hardware integers** at compile time!
 
