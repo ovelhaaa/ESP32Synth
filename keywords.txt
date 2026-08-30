@@ -1,5 +1,5 @@
 #######################################
-# Syntax Coloring Map for ESP32Synth (v2.4.2)
+# Syntax Coloring Map For ESP32Synth
 #######################################
 
 #######################################
@@ -7,40 +7,52 @@
 #######################################
 
 ESP32Synth	KEYWORD1
+ESP32Patches	KEYWORD1
+fip	KEYWORD1
+FLT_Baker	KEYWORD1
+Voice	KEYWORD1
+AudioBus	KEYWORD1
+FXNode	KEYWORD1
 Instrument	KEYWORD1
 Instrument_Sample	KEYWORD1
 SampleData	KEYWORD1
 SampleZone	KEYWORD1
 StreamTrack	KEYWORD1
-Voice	KEYWORD1
 SynthOutputMode	KEYWORD1
 WaveType	KEYWORD1
+FXType	KEYWORD1
 BitDepth	KEYWORD1
 EnvState	KEYWORD1
 I2S_Depth	KEYWORD1
 LoopMode	KEYWORD1
-SynthCustomWaveCallback	KEYWORD1
-SynthDSPCallback	KEYWORD1
-SynthControlCallback	KEYWORD1
-SynthCustomOutputCallback	KEYWORD1
 
 #######################################
 # Methods and Functions (KEYWORD2)
 #######################################
 
+# Engine Lifecycle & System
 begin	KEYWORD2
 beginCustom	KEYWORD2
+beginHeadless	KEYWORD2
 end	KEYWORD2
 setSampleRate	KEYWORD2
 setControlRateHz	KEYWORD2
+setMasterVolume	KEYWORD2
 setVolDepthBase	KEYWORD2
 setMasterBitcrush	KEYWORD2
-setMasterVolume	KEYWORD2
+getMasterVolume	KEYWORD2
+getChipModel	KEYWORD2
+getSampleRate	KEYWORD2
+getCPULoad	KEYWORD2
+
+# Custom Hooks & Pull Output
 setCustomDSP	KEYWORD2
 setCustomControl	KEYWORD2
 setCustomOutput	KEYWORD2
 generateSamples	KEYWORD2
 generateSamplesStereo	KEYWORD2
+
+# Voice Control & Pitch
 noteOn	KEYWORD2
 noteOff	KEYWORD2
 setFrequency	KEYWORD2
@@ -49,9 +61,20 @@ setWave	KEYWORD2
 setPulseWidthBitDepth	KEYWORD2
 setPulseWidth	KEYWORD2
 setCustomWave	KEYWORD2
+setCustomParam	KEYWORD2
+setDSPParam	KEYWORD2
+setVoiceBus	KEYWORD2
+setBusFX	KEYWORD2
+setBusFXParam	KEYWORD2
+setBusMix	KEYWORD2
+
+# Envelope & Phase
 setEnv	KEYWORD2
+setSmoothEnv	KEYWORD2
 setStartPhase	KEYWORD2
 setCurrentPhase	KEYWORD2
+
+# Modulation & Slides
 setVibrato	KEYWORD2
 setVibratoPhase	KEYWORD2
 setTremolo	KEYWORD2
@@ -60,6 +83,8 @@ slideFreq	KEYWORD2
 slideFreqTo	KEYWORD2
 slideVol	KEYWORD2
 slideVolTo	KEYWORD2
+
+# Wavetables, Samples & Instruments
 setWavetable	KEYWORD2
 registerWavetable	KEYWORD2
 setInstrument	KEYWORD2
@@ -67,8 +92,12 @@ detachInstrument	KEYWORD2
 registerSample	KEYWORD2
 setSample	KEYWORD2
 setSampleLoop	KEYWORD2
+
+# Arpeggiator
 setArpeggio	KEYWORD2
 detachArpeggio	KEYWORD2
+
+# SD Streaming
 setupStream	KEYWORD2
 playStream	KEYWORD2
 pauseStream	KEYWORD2
@@ -79,6 +108,13 @@ setStreamLoopPointsMs	KEYWORD2
 getStreamPositionMs	KEYWORD2
 getStreamDurationMs	KEYWORD2
 isStreamPlaying	KEYWORD2
+
+# SD Recording
+startRecording	KEYWORD2
+stopRecording	KEYWORD2
+isRecordingActive	KEYWORD2
+
+# Voice Getters & Inspection
 getFrequencyCentiHz	KEYWORD2
 getVolume	KEYWORD2
 getVolume8Bit	KEYWORD2
@@ -92,21 +128,40 @@ getEnvState	KEYWORD2
 getWaveType	KEYWORD2
 getPhase	KEYWORD2
 getPulseWidth	KEYWORD2
-getCPULoad	KEYWORD2
-getMasterVolume	KEYWORD2
-getChipModel	KEYWORD2
-getSampleRate	KEYWORD2
+
+# Built-in DSP Patches (ESP32Patches)
+poly_blep	KEYWORD2
+AA_Saw	KEYWORD2
+AA_Pulse	KEYWORD2
+DSP_BiquadOsc	KEYWORD2
+FM_Custom	KEYWORD2
+HammondB3	KEYWORD2
+EKS_Guitar	KEYWORD2
+DSP_HammondLeslie	KEYWORD2
+DSP_Pedalboard	KEYWORD2
+
+# FLT & Baker Methods
+bakeWavetable	KEYWORD2
+toFloat	KEYWORD2
+toAudio16	KEYWORD2
+fromPhase	KEYWORD2
+fromParam	KEYWORD2
+fromEnv	KEYWORD2
+fast_tanh	KEYWORD2
 
 #######################################
-# Constants and Enumerations (LITERAL1)
+# Constants and Enums (LITERAL1)
 #######################################
 
+# Output Modes
 SMODE_PDM	LITERAL1
 SMODE_I2S	LITERAL1
 SMODE_DAC	LITERAL1
 SMODE_PWM	LITERAL1
 SMODE_CUSTOM	LITERAL1
+SMODE_HEADLESS	LITERAL1
 
+# Wave Types
 WAVE_SINE	LITERAL1
 WAVE_TRIANGLE	LITERAL1
 WAVE_SAW	LITERAL1
@@ -117,20 +172,50 @@ WAVE_SAMPLE	LITERAL1
 WAVE_STREAM	LITERAL1
 WAVE_CUSTOM	LITERAL1
 
-LOOP_OFF	LITERAL1
-LOOP_FORWARD	LITERAL1
-LOOP_PINGPONG	LITERAL1
-LOOP_REVERSE    LITERAL1
+# FX Types
+FX_NONE	LITERAL1
+FX_CUSTOM	LITERAL1
 
+# Bit Depths
 BITS_4	LITERAL1
 BITS_8	LITERAL1
 BITS_16	LITERAL1
 
-I2S_16BIT	LITERAL1
-I2S_32BIT	LITERAL1
-
+# Envelope States
 ENV_IDLE	LITERAL1
 ENV_ATTACK	LITERAL1
 ENV_DECAY	LITERAL1
 ENV_SUSTAIN	LITERAL1
-ENV_RELEASE LITERAL1
+ENV_RELEASE	LITERAL1
+
+# I2S Depth
+I2S_16BIT	LITERAL1
+I2S_32BIT	LITERAL1
+
+# Loop Modes
+LOOP_OFF	LITERAL1
+LOOP_FORWARD	LITERAL1
+LOOP_PINGPONG	LITERAL1
+LOOP_REVERSE	LITERAL1
+
+# Core Engine Limits & Defines
+MAX_VOICES	LITERAL1
+MAX_WAVETABLES	LITERAL1
+MAX_SAMPLES	LITERAL1
+MAX_ARP_NOTES	LITERAL1
+MAX_STREAMS	LITERAL1
+STREAM_BUF_SAMPLES	LITERAL1
+MAX_BUSES	LITERAL1
+MAX_FX_PER_BUS	LITERAL1
+SYNTH_FX_PARAMS	LITERAL1
+SYNTH_FX_STATES	LITERAL1
+SYNTH_CUSTOM_WAVE_STATES	LITERAL1
+SYNTH_CUSTOM_PARAMS_PER_VOICE	LITERAL1
+SYNTH_CUSTOM_PARAMS_GLOBAL	LITERAL1
+RECORD_BUF_SAMPLES	LITERAL1
+SYNTH_DMA_BUF_LEN	LITERAL1
+SYNTH_DMA_BUF_COUNT	LITERAL1
+SYNTH_SD_TASK_CORE	LITERAL1
+SYNTH_AUDIO_TASK_CORE	LITERAL1
+SINE_LUT_SIZE	LITERAL1
+ENV_MAX	LITERAL1
