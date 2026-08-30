@@ -137,6 +137,12 @@ enum WaveType : int8_t {
     WAVE_CUSTOM    = 4,
 };
 
+enum FXType : uint8_t {
+    FX_NONE = 0,
+    FX_CUSTOM = 1
+    // Built-in FX types can be added here in the future
+};
+
 enum BitDepth : uint8_t {
     BITS_4,
     BITS_8,
@@ -219,6 +225,22 @@ struct StreamTrack {
     bool              active;
     volatile bool     playing;
     bool              loop;
+};
+
+typedef void (*SynthCustomFXCallback)(int32_t* busBuffer, int samples, int16_t* ep, int32_t* es);
+
+struct FXNode {
+    bool                  active;
+    FXType                type;
+    int16_t               ep[SYNTH_FX_PARAMS];
+    int32_t               es[SYNTH_FX_STATES];
+    SynthCustomFXCallback customFXFunc;
+};
+
+struct AudioBus {
+    bool    active;
+    uint8_t mixLevel;
+    FXNode  fxChain[MAX_FX_PER_BUS];
 };
 
 struct Voice;
@@ -316,6 +338,7 @@ struct Voice {
     uint8_t            morph;
     uint8_t            arpLen;
     uint8_t            arpIdx;
+    uint8_t            targetBus;
     bool               active;
     bool               slideFreqActive;
     bool               slideVolActive;
@@ -376,6 +399,10 @@ public:
     void setCustomWave(uint16_t voice, SynthCustomWaveCallback cb);
     void setCustomParam(uint16_t voice, uint8_t paramId, int16_t value);
     void setDSPParam(uint8_t paramId, int16_t value);
+    void setVoiceBus(uint16_t voice, uint8_t busId);
+    void setBusFX(uint8_t busId, uint8_t slotId, FXType type, SynthCustomFXCallback cb = nullptr);
+    void setBusFXParam(uint8_t busId, uint8_t slotId, uint8_t paramId, int16_t value);
+    void setBusMix(uint8_t busId, uint8_t volume);
 
     // --- Envelope ---
     void setEnv(uint16_t voice, uint16_t a, uint16_t d, uint8_t s, uint16_t r);
@@ -472,6 +499,8 @@ private:
         BitDepth    depth;
     };
 
+    AudioBus busesConfig[MAX_BUSES];
+
     StreamTrack   streams[MAX_STREAMS];
     TaskHandle_t  streamTaskHandle = NULL;
     TaskHandle_t  audioTaskHandle = NULL;
@@ -524,7 +553,8 @@ private:
     int _mclkPin = -1;
 
     static void audioTask(void* param);
-    void render(void* buffer, int32_t* mixBuffer, int samples);
+
+    void render(void* buffer, int32_t** busBuffers, int samples);
     void renderLoop();
     void processControl();
     int16_t fetchWavetableSample(uint16_t id, uint32_t phase);

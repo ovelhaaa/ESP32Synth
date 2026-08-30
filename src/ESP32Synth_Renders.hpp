@@ -12,30 +12,30 @@
 #endif
 
 // The LoopMode switch is pulled out of the hot path.
-// Highly optimized and mathematically corrected bounds checking!
+// MEGA OPTIMIZATION: Pre-shifted constants to avoid 64-bit shifting inside the tight loop!
 #define ADVANCE_SAMPLE_POS \
     if (dir) { \
         pos += inc; \
-        if (UNLIKELY((pos >> 16) >= lEnd)) { \
+        if (UNLIKELY(pos >= lEnd16)) { \
             if (vo->sampleLoopMode == LOOP_FORWARD) { \
-                pos = ((uint64_t)lStart << 16) + (pos - ((uint64_t)lEnd << 16)); \
+                pos = lStart16 + (pos - lEnd16); \
             } \
             else if (vo->sampleLoopMode == LOOP_PINGPONG) { \
                 dir = false; \
-                pos = ((uint64_t)lEnd << 16) - 1 - (pos - ((uint64_t)lEnd << 16)) - inc; \
+                pos = lEnd16 - 1 - (pos - lEnd16) - inc; \
             } \
             else { vo->sampleFinished = true; break; } \
         } \
     } else { \
         bool underflow = (pos < inc); \
         pos -= inc; \
-        if (UNLIKELY(underflow || (pos >> 16) < lStart)) { \
+        if (UNLIKELY(underflow || pos < lStart16)) { \
             if (vo->sampleLoopMode == LOOP_PINGPONG) { \
                 dir = true; \
-                pos = ((uint64_t)lStart << 16) + (((uint64_t)lStart << 16) - pos); \
+                pos = lStart16 + (lStart16 - pos); \
             } \
             else if (vo->sampleLoopMode == LOOP_REVERSE) { \
-                pos = ((uint64_t)lEnd << 16) - 1 - (((uint64_t)lStart << 16) - pos) + inc; \
+                pos = lEnd16 - 1 - (lStart16 - pos) + inc; \
             } \
             else { vo->sampleFinished = true; break; } \
         } \
@@ -52,6 +52,8 @@ static FORCE_INLINE IRAM_ATTR void renderBlockSample(Voice* __restrict__ vo, int
     const uint32_t inc    = vo->sampleInc1616;
     const uint32_t lStart = vo->sampleLoopStart;
     const uint32_t lEnd   = (vo->sampleLoopEnd > 0 && vo->sampleLoopEnd <= len) ? vo->sampleLoopEnd : len;
+    const uint64_t lStart16 = (uint64_t)lStart << 16;
+    const uint64_t lEnd16   = (uint64_t)lEnd << 16;
     int32_t        currentEnv = startEnv;
     int32_t        volBase    = ((uint32_t)vo->vol * vo->trmModGain) >> 8;
     bool           dir        = vo->sampleDirection;

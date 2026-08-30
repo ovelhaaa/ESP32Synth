@@ -1,11 +1,11 @@
-# ESP32Synth v2.4.4 — Highly Optimized Bare-Metal Synth Engine for Embedded Polyphony
+# ESP32Synth v2.4.5 — Highly Optimized Bare-Metal Synth Engine for Embedded Polyphony
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/danilogcrf2-oss/ESP32Synth/main/banner.jpg" alt="ESP32Synth banner" width="100%">
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.4.4-green.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.4.5-green.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-ESP32%20%7C%20ESP32--S3%20%7C%20ESP32--S2%20%7C%20ESP32--C3%20%7C%20ESP32--C6-orange.svg" alt="Platform">
   <img src="https://img.shields.io/badge/framework-Arduino%20%7C%20ESP--IDF-blue.svg" alt="Framework">
   <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="License">
@@ -13,11 +13,11 @@
 
 A high-performance, polyphonic audio synthesis library for the ESP32 series (including S3, S2, C3, C6, etc.). Engineered for extreme bare-metal optimization, low-latency rendering, massive voice density, custom DSP hooks, and direct filesystem/SD-card streaming. Dual-framework support ensures compilation in both Arduino IDE and VS Code (PlatformIO) under either Arduino or native ESP-IDF.
 
-### ✨ What's New in v2.4.4
-* **Xtensa LX7 SIMD Vectorization (`v4i32`)**: The engine now natively leverages 128-bit SIMD instructions on the ESP32-S3, processing 4 audio samples in a single clock cycle. *Result: 64 active voices consume only ~19% of the ESP32-S3 CPU.*
-* **Bulletproof Memory Boundaries**: Utterly precise sub-sample bouncing mathematics for `LOOP_REVERSE` and `LOOP_PINGPONG`. Zero memory leaks, zero array out-of-bounds crashes, absolute stability.
-* **`ESP32Synth_Patches.hpp` Included**: A suite of highly optimized, 100% Fixed-Point algorithms, including branchless PolyBLEP Anti-Aliasing and 24-bit/64-bit Dynamic RBJ Biquad Filters.
-* **Headless Audio Mode (`SMODE_HEADLESS`)**: Process and render pure DSP mathematics to an SD Card (.wav) in real-time, matching standard I2S timing without requiring any physical audio hardware pins.
+### ✨ What's New in v2.4.5
+* **The FLT Engine (Float Translator)**: Write DSP code using intuitive floating-point logic (`fip`) while the engine translates it into blazing-fast Q8.24 32-bit hardware integers at compile time! Zero CPU cost for float literals.
+* **Wavetable Baker (`FLT_Baker`)**: Pre-calculate complex mathematical waveforms into RAM during setup using float math. Choose 16-bit, 8-bit, or 4-bit depths to save memory footprint.
+* **Expanded DSP Patches**: New highly optimized instruments and FX added to `ESP32Synth_Patches.hpp`, including Karplus-Strong Guitar (`EKS_Guitar`), Hammond B3 Organ, FM Synthesis, Leslie Speaker FX, and a full Pedalboard FX chain.
+* **Xtensa Core Micro-Optimizations**: Enhanced branch predictor hints (`LIKELY`/`UNLIKELY`) and deeper SIMD shielding, squeezing even more stability out of the Xtensa LX7 pipeline for maximum polyphony.
 
 <p align="center">
   <a href="https://ko-fi.com/G3E323KDZC">
@@ -40,7 +40,8 @@ A high-performance, polyphonic audio synthesis library for the ESP32 series (inc
 8. [Dual-Framework Filesystem Streaming (SD Card)](#8-dual-framework-filesystem-streaming-sd-card)
 9. [External Protocol Pull Mode (A2DP Bluetooth & Wi-Fi)](#9-external-protocol-pull-mode-a2dp-bluetooth--wi-fi)
 10. [Fixed-Point Advanced DSP & Custom Synthesis Blocks](#10-fixed-point-advanced-dsp--custom-synthesis-blocks)
-11. [Development Tools & Advanced Troubleshooting](#11-development-tools--advanced-troubleshooting)
+11. [The FLT Engine: Write Floats, Run Integers](#11-the-flt-engine-write-floats-run-integers)
+12. [Development Tools & Advanced Troubleshooting](#12-development-tools--advanced-troubleshooting)
 
 ---
 
@@ -54,13 +55,13 @@ By eliminating `float` operations, hardware divisions, and branch instructions f
 * **Adaptive Multi-Pole Resonant Filters (Biquads)**
 * **PolyBLEP Anti-Aliased Waveforms**
 
-To implement these blocks, you must maintain this performance philosophy: **use strictly 16.16, 24.8, or 32.32 fixed-point math, look-up tables (LUTs), and bitwise operations (`>>`).**
+To implement these blocks natively, you must maintain this performance philosophy: **use strictly 16.16, 24.8, or 32.32 fixed-point math, look-up tables (LUTs), and bitwise operations (`>>`).** *(Or, use the new FLT Engine to do it for you—see Section 11).*
 
 ---
 
 ## 2. PlatformIO (VS Code) & ESP-IDF Integration
 
-With **v2.4.4**, PlatformIO integration is native. File system abstractions are unified, allowing you to run identical synth files under both Arduino and ESP-IDF frameworks.
+With **v2.4.5**, PlatformIO integration is native. File system abstractions are unified, allowing you to run identical synth files under both Arduino and ESP-IDF frameworks.
 
 ### PlatformIO Configuration (`platformio.ini`)
 
@@ -304,10 +305,10 @@ void write_bluetooth_packet(uint8_t *stream_buffer, int buffer_length) {
 
 ## 10. Fixed-Point Advanced DSP & Custom Synthesis Blocks
 
-Inject complex physical effects and waveshapes into the engine. With v2.4.4, we include `ESP32Synth_Patches.hpp` offering professional anti-aliased oscillators and filters.
+Inject complex physical effects and waveshapes into the engine. With **v2.4.5**, we include `ESP32Synth_Patches.hpp` offering professional anti-aliased oscillators, instruments, and complex FX chains!
 
-### Using the Built-In Biquad Filter Patch
-Replaces standard raw oscillators with PolyBLEP anti-aliased waveforms pushed through a 24-bit fixed-point resonant State Variable (RBJ) Biquad filter:
+### Using the Built-In Patches
+Replaces standard raw oscillators with robust algorithms like the PolyBLEP anti-aliased 24-bit fixed-point resonant State Variable (RBJ) Biquad filter, Karplus-Strong Strings, or Hammond B3 simulations:
 
 ```cpp
 #include "ESP32Synth_Patches.hpp"
@@ -321,13 +322,34 @@ void play_filtered_saw() {
     
     synth.noteOn(0, c4, 255);
 }
+
+void play_guitar() {
+    synth.setCustomWave(1, ESP32Patches::EKS_Guitar); // Authentic Karplus-Strong string pluck
+    synth.noteOn(1, e4, 255);
+}
+```
+
+### Applying Master/Bus FX Chains
+You can now apply effects like Leslie speakers or distortion pedalboards natively using the multi-bus architecture:
+```cpp
+// Route voice 0 to Bus 1
+synth.setVoiceBus(0, 1);
+
+// Apply a Pedalboard (Distortion + Chorus + Delay) to Bus 1, Slot 0
+synth.setBusFX(1, 0, FX_CUSTOM, ESP32Patches::DSP_Pedalboard);
+synth.setBusFXParam(1, 0, 0, 1); // Enable Distortion
+synth.setBusFXParam(1, 0, 1, 1); // Enable Chorus
+synth.setBusFXParam(1, 0, 2, 1); // Enable Delay
+
+// Route Bus 1 to Master output (Volume 255)
+synth.setBusMix(1, 255); 
 ```
 
 ### Building Your Own Custom DSP Voice
-You can write completely new generation routines. Just respect the mathematical rule: No `float`, no hardware division in the loop.
+You can write completely new generation routines. Just respect the mathematical rule: No `float`, no hardware division in the loop. *(Or, use the new FLT Engine described below!)*
 
 ```cpp
-// Extremely optimized Karplus-Strong string pluck (Pseudo-code example)
+// Extremely optimized String pluck (Legacy integer style Example)
 void IRAM_ATTR myPluckOscillator(Voice* vo, int32_t* mixBuffer, int samples, int32_t startEnv, int32_t envStep) {
     int32_t currentEnv = startEnv;
     int32_t volBase = ((uint32_t)vo->vol * vo->trmModGain) >> 8;
@@ -349,7 +371,73 @@ void IRAM_ATTR myPluckOscillator(Voice* vo, int32_t* mixBuffer, int samples, int
 
 ---
 
-## 11. Development Tools & Advanced Troubleshooting
+## 11. The FLT Engine: Write Floats, Run Integers (NEW in v2.4.5)
+
+The `fip` (Fixed-Point) class acts as a transparent translator. It allows you to write custom DSP algorithms using familiar floating-point syntax (`fip::sin()`, `0.5f`), while the C++ compiler translates everything into **ultra-fast Q8.24 32-bit hardware integers** at compile time!
+
+### The 3 Golden Rules of FLT:
+1. **The Q8.24 Range Limit (-128.0 to 127.999)**: Never put raw frequency values (like `48000.0` or `440.0`) into a `fip`, as it will overflow. Always work with normalized ratios (Hz / SampleRate) which safely fit between 0.0 and 0.5. Example: `fip(440.0f / 48000.0f)`.
+2. **Wrap Your Floats**: Never mix naked floats with `fip` in equations. Always wrap literal floats like `fip(0.5f)` so GCC optimizes the conversion to **zero** CPU cost at runtime.
+3. **Gateway I/O**: Use `fip::fromPhase()`, `fip::fromParam()`, or `fip::fromEnv()` to bring engine variables into FLT math, and `.toAudio16()` to safely return the signal to the mix buffer.
+
+### Example: FLT Custom Oscillator
+```cpp
+#include "ESP32Synth_FLT.hpp"
+
+void myCustomOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t startEnv, int32_t envStep) {
+    fip phase = fip::fromPhase(vo->phase);          // Gateway IN: Engine Phase -> 0.0 to 1.0
+    fip inc   = fip::fromPhase(vo->phaseInc);             
+    
+    int32_t currentEnv = startEnv;
+    int32_t volBase = ((uint32_t)vo->vol * vo->trmModGain) >> 8;
+
+    for (int i = 0; i < samples; i++) {
+        // Pure Q8.24 Integer Math disguised as Floats!
+        fip myWave = fip::sin(phase * fip(2.0f) * fip::pi()); 
+        
+        int32_t envSafe = currentEnv >> 14;
+        envSafe &= ~(envSafe >> 31);
+        int32_t finalVol = (envSafe * volBase) >> 14;
+
+        // Gateway OUT: fip -> Audio Int16
+        mixBuffer[i] += (myWave.toAudio16() * finalVol) >> 16;  
+        
+        phase += inc;
+        currentEnv += envStep;
+    }
+    vo->phase = (uint32_t)(phase.val << 8); // Save phase back to engine
+}
+```
+
+### Baking Wavetables Mathematically (`FLT_Baker`)
+If you don't need real-time parameter modulation, pre-calculate complex equations into RAM during `setup()` and play them directly as an ultra-fast wavetable!
+
+```cpp
+#include "ESP32Synth_FLT.hpp"
+
+const void* bakedData;
+
+void setup() {
+    // ... begin synth ...
+
+    // Runs ONCE during setup. Bakes the math into Wavetable Slot 0 (16-bit, 4096 points)
+    bakedData = FLT_Baker::bakeWavetable(&synth, 0, [](fip phase) {
+        fip wave1 = fip::sin(phase * fip::two_pi());
+        fip wave2 = fip::cos(phase * fip::two_pi() * fip(3.0f)) * fip(0.5f);
+        return fip::fast_tanh(wave1 + wave2); // Soft-clipper applied
+    }, 4096, BITS_16);
+}
+
+void play_note() {
+    synth.setWave(0, WAVE_WAVETABLE);
+    synth.setWavetable(0, bakedData, 4096, BITS_16);
+    synth.noteOn(0, c4, 255);
+}
+```
+
+---
+
+## 12. Development Tools & Advanced Troubleshooting
 
 ### Utility Scripts (`/tools`)
 The repository contains two high-speed python utilities:

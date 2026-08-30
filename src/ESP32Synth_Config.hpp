@@ -70,6 +70,27 @@
 #define SYNTH_CUSTOM_PARAMS_GLOBAL    4 // dp array size (int16_t).
 #endif
 
+/*
+  ====================================================================================
+   MODULAR FX ROUTING & BUSES
+  ====================================================================================
+*/
+#ifndef MAX_BUSES
+#define MAX_BUSES         4  // 0 = Master Dry, 1+ = FX Buses. (Keep it low to save RAM)
+#endif
+
+#ifndef MAX_FX_PER_BUS
+#define MAX_FX_PER_BUS    3  // Max effect slots chained per bus
+#endif
+
+#ifndef SYNTH_FX_PARAMS
+#define SYNTH_FX_PARAMS   6  // Effect Parameters array size (ep)
+#endif
+
+#ifndef SYNTH_FX_STATES
+#define SYNTH_FX_STATES   6  // Effect States array size (es)
+#endif
+
 // --- SD Recording Buffer ---
 // 16384 samples = ~32KB of RAM (Only allocated while recording!)
 // MUST be a power of 2 for extremely fast bitwise mask wrap-around.

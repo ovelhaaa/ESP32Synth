@@ -58,12 +58,10 @@ public:
     // executing only at the exact sample of the waveform's discontinuity.
     static inline int32_t poly_blep(uint32_t ph, uint32_t inc) {
         if (UNLIKELY(ph < inc)) {
-            // Cast to uint64_t prevents 32-bit overflow on high frequencies!
             int32_t p = (int32_t)(((uint64_t)ph << 15) / inc); 
             int32_t one_minus_p = 32768 - p;
             return (one_minus_p * one_minus_p) >> 15;
         } else if (UNLIKELY(ph > (uint32_t)-inc)) {
-            // Exact distance to wrap-around point without subtraction
             uint32_t diff = (uint32_t)-ph;
             int32_t p = (int32_t)(((uint64_t)diff << 15) / inc);
             int32_t one_minus_p = 32768 - p;
@@ -71,6 +69,7 @@ public:
         }
         return 0;
     }
+
     // Anti-Aliased Sawtooth
     static void AA_Saw(Voice* vo, int32_t* mixBuffer, int samples, int32_t startEnv, int32_t envStep) {
         int32_t currentEnv = startEnv;
@@ -78,22 +77,31 @@ public:
         uint32_t ph = vo->phase;
         uint32_t inc = vo->phaseInc + vo->vibOffset;
 
-        for (int i = 0; i < samples; i++) {
+        if (envStep == 0) {
             int32_t envSafe = currentEnv >> 14;
             envSafe &= ~(envSafe >> 31);
             int32_t finalVol = (envSafe * volBase) >> 14;
+            if (finalVol == 0) { vo->phase += inc * samples; return; }
 
-            // Naive Sawtooth
-            int32_t val = (int32_t)(ph >> 16) - 32768;
-            
-            // Apply PolyBLEP to smooth the falling discontinuity
-            val += poly_blep(ph, inc);
+            for (int i = 0; i < samples; i++) {
+                int32_t val = (int32_t)(ph >> 16) - 32768;
+                val += poly_blep(ph, inc);
+                mixBuffer[i] += (int32_t)(((int64_t)val * finalVol) >> 16);
+                ph += inc;
+            }
+        } else {
+            for (int i = 0; i < samples; i++) {
+                int32_t envSafe = currentEnv >> 14;
+                envSafe &= ~(envSafe >> 31);
+                int32_t finalVol = (envSafe * volBase) >> 14;
 
-            // 64-bit cast protects against overflow from PolyBLEP overshoots (Gibbs phenomenon)
-            mixBuffer[i] += (int32_t)(((int64_t)val * finalVol) >> 16);
+                int32_t val = (int32_t)(ph >> 16) - 32768;
+                val += poly_blep(ph, inc);
+                mixBuffer[i] += (int32_t)(((int64_t)val * finalVol) >> 16);
 
-            ph += inc;
-            currentEnv += envStep;
+                ph += inc;
+                currentEnv += envStep;
+            }
         }
         vo->phase = ph;
     }
@@ -106,25 +114,33 @@ public:
         uint32_t inc = vo->phaseInc + vo->vibOffset;
         uint32_t pw = vo->pulseWidth;
 
-        for (int i = 0; i < samples; i++) {
+        if (envStep == 0) {
             int32_t envSafe = currentEnv >> 14;
             envSafe &= ~(envSafe >> 31);
             int32_t finalVol = (envSafe * volBase) >> 14;
+            if (finalVol == 0) { vo->phase += inc * samples; return; }
 
-            // Naive Pulse
-            int32_t val = (ph < pw) ? 32767 : -32768;
-            
-            // Rising edge smoothing (ph == 0)
-            val -= poly_blep(ph, inc);
-            
-            // Falling edge smoothing (ph == pulseWidth)
-            val += poly_blep((uint32_t)(ph - pw), inc);
+            for (int i = 0; i < samples; i++) {
+                int32_t val = (ph < pw) ? 32767 : -32768;
+                val -= poly_blep(ph, inc);
+                val += poly_blep((uint32_t)(ph - pw), inc);
+                mixBuffer[i] += (int32_t)(((int64_t)val * finalVol) >> 16);
+                ph += inc;
+            }
+        } else {
+            for (int i = 0; i < samples; i++) {
+                int32_t envSafe = currentEnv >> 14;
+                envSafe &= ~(envSafe >> 31);
+                int32_t finalVol = (envSafe * volBase) >> 14;
 
-            // 64-bit cast protects against overflow from PolyBLEP overshoots
-            mixBuffer[i] += (int32_t)(((int64_t)val * finalVol) >> 16);
+                int32_t val = (ph < pw) ? 32767 : -32768;
+                val -= poly_blep(ph, inc);
+                val += poly_blep((uint32_t)(ph - pw), inc);
+                mixBuffer[i] += (int32_t)(((int64_t)val * finalVol) >> 16);
 
-            ph += inc;
-            currentEnv += envStep;
+                ph += inc;
+                currentEnv += envStep;
+            }
         }
         vo->phase = ph;
     }
@@ -198,85 +214,136 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
         int32_t y1 = (int32_t)vo->cw[2];
         int32_t y2 = (int32_t)vo->cw[3];
 
-        // --- BLINDAGEM CONTRA LIXO DE NOTAS ANTERIORES ---
-        // Se a nota acabou de ser disparada (Envelope no início do Ataque), zeramos o cache do filtro.
         if (startEnv < 16384 && vo->envState == ENV_ATTACK) {
             x1 = 0; x2 = 0; y1 = 0; y2 = 0;
         }
 
-        if (waveType == 1) { // PULSE
-            for (int i = 0; i < samples; i++) {
-                int32_t x0 = (ph < pw) ? 32767 : -32768;
-                x0 -= poly_blep(ph, inc);
-                x0 += poly_blep((uint32_t)(ph - pw), inc);
-                
-                int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2) 
-                            - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
-                int32_t y0 = (int32_t)(acc >> 24);
-                
-                y0 -= (y0 >> 9); // leaky DC Blocker
-                
-                // Headroom Tighter: 18dB de limite para evitar overshoot do PolyBLEP (Gibbs phenomenon)
-                if (UNLIKELY(y0 > 262143)) y0 = 262143;
-                else if (UNLIKELY(y0 < -262143)) y0 = -262143;
-                
-                x2 = x1; x1 = x0; y2 = y1; y1 = y0;
-                
-                int32_t envSafe = currentEnv >> 14;
-                envSafe &= ~(envSafe >> 31);
-                int32_t finalVol = (envSafe * volBase) >> 14;
-                
-                mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16); 
-                
-                ph += inc; currentEnv += envStep;
+        if (envStep == 0) {
+            int32_t envSafe = currentEnv >> 14;
+            envSafe &= ~(envSafe >> 31);
+            int32_t finalVol = (envSafe * volBase) >> 14;
+
+            if (waveType == 1) { // PULSE
+                for (int i = 0; i < samples; i++) {
+                    int32_t x0 = (ph < pw) ? 32767 : -32768;
+                    x0 -= poly_blep(ph, inc);
+                    x0 += poly_blep((uint32_t)(ph - pw), inc);
+                    
+                    int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2) 
+                                - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
+                    int32_t y0 = (int32_t)(acc >> 24);
+                    
+                    y0 -= (y0 >> 9);
+                    if (UNLIKELY(y0 > 262143)) y0 = 262143;
+                    else if (UNLIKELY(y0 < -262143)) y0 = -262143;
+                    
+                    x2 = x1; x1 = x0; y2 = y1; y1 = y0;
+                    mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16); 
+                    ph += inc;
+                }
+            } else if (waveType == 2) { // TRIANGLE
+                for (int i = 0; i < samples; i++) {
+                    int16_t saw = (int16_t)(ph >> 16);
+                    int32_t x0 = (int32_t)(((saw ^ (saw >> 15)) * 2) - 32767);
+                    
+                    int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2) 
+                                - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
+                    int32_t y0 = (int32_t)(acc >> 24);
+                    
+                    y0 -= (y0 >> 9);
+                    if (UNLIKELY(y0 > 262143)) y0 = 262143;
+                    else if (UNLIKELY(y0 < -262143)) y0 = -262143;
+                    
+                    x2 = x1; x1 = x0; y2 = y1; y1 = y0;
+                    mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16);
+                    ph += inc;
+                }
+            } else { // SAWTOOTH
+                for (int i = 0; i < samples; i++) {
+                    int32_t x0 = (int32_t)(ph >> 16) - 32768; 
+                    x0 += poly_blep(ph, inc);
+                    
+                    int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2) 
+                                - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
+                    int32_t y0 = (int32_t)(acc >> 24);
+                    
+                    y0 -= (y0 >> 9);
+                    if (UNLIKELY(y0 > 262143)) y0 = 262143;
+                    else if (UNLIKELY(y0 < -262143)) y0 = -262143;
+                    
+                    x2 = x1; x1 = x0; y2 = y1; y1 = y0;
+                    mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16);
+                    ph += inc;
+                }
             }
-        } else if (waveType == 2) { // TRIANGLE
-            for (int i = 0; i < samples; i++) {
-                int16_t saw = (int16_t)(ph >> 16);
-                int32_t x0 = (int32_t)(((saw ^ (saw >> 15)) * 2) - 32767);
-                
-                int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2) 
-                            - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
-                int32_t y0 = (int32_t)(acc >> 24);
-                
-                y0 -= (y0 >> 9); // leaky DC Blocker
-                
-                if (UNLIKELY(y0 > 262143)) y0 = 262143;
-                else if (UNLIKELY(y0 < -262143)) y0 = -262143;
-                
-                x2 = x1; x1 = x0; y2 = y1; y1 = y0;
-                
-                int32_t envSafe = currentEnv >> 14;
-                envSafe &= ~(envSafe >> 31);
-                int32_t finalVol = (envSafe * volBase) >> 14;
-                
-                mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16);
-                
-                ph += inc; currentEnv += envStep;
-            }
-        } else { // SAWTOOTH
-            for (int i = 0; i < samples; i++) {
-                int32_t x0 = (int32_t)(ph >> 16) - 32768; 
-                x0 += poly_blep(ph, inc);
-                
-                int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2) 
-                            - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
-                int32_t y0 = (int32_t)(acc >> 24);
-                
-                y0 -= (y0 >> 9); // Leaky DC Blocker
-                
-                if (UNLIKELY(y0 > 262143)) y0 = 262143;
-                else if (UNLIKELY(y0 < -262143)) y0 = -262143;
-                
-                x2 = x1; x1 = x0; y2 = y1; y1 = y0;
-                
-                int32_t envSafe = currentEnv >> 14;
-                envSafe &= ~(envSafe >> 31);
-                int32_t finalVol = (envSafe * volBase) >> 14;
-                
-                mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16);
-                
-                ph += inc; currentEnv += envStep;
+        } else {
+            if (waveType == 1) { // PULSE
+                for (int i = 0; i < samples; i++) {
+                    int32_t x0 = (ph < pw) ? 32767 : -32768;
+                    x0 -= poly_blep(ph, inc);
+                    x0 += poly_blep((uint32_t)(ph - pw), inc);
+                    
+                    int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2) 
+                                - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
+                    int32_t y0 = (int32_t)(acc >> 24);
+                    
+                    y0 -= (y0 >> 9);
+                    if (UNLIKELY(y0 > 262143)) y0 = 262143;
+                    else if (UNLIKELY(y0 < -262143)) y0 = -262143;
+                    
+                    x2 = x1; x1 = x0; y2 = y1; y1 = y0;
+                    
+                    int32_t envSafe = currentEnv >> 14;
+                    envSafe &= ~(envSafe >> 31);
+                    int32_t finalVol = (envSafe * volBase) >> 14;
+                    
+                    mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16); 
+                    ph += inc; currentEnv += envStep;
+                }
+            } else if (waveType == 2) { // TRIANGLE
+                for (int i = 0; i < samples; i++) {
+                    int16_t saw = (int16_t)(ph >> 16);
+                    int32_t x0 = (int32_t)(((saw ^ (saw >> 15)) * 2) - 32767);
+                    
+                    int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2) 
+                                - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
+                    int32_t y0 = (int32_t)(acc >> 24);
+                    
+                    y0 -= (y0 >> 9);
+                    if (UNLIKELY(y0 > 262143)) y0 = 262143;
+                    else if (UNLIKELY(y0 < -262143)) y0 = -262143;
+                    
+                    x2 = x1; x1 = x0; y2 = y1; y1 = y0;
+                    
+                    int32_t envSafe = currentEnv >> 14;
+                    envSafe &= ~(envSafe >> 31);
+                    int32_t finalVol = (envSafe * volBase) >> 14;
+                    
+                    mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16);
+                    ph += inc; currentEnv += envStep;
+                }
+            } else { // SAWTOOTH
+                for (int i = 0; i < samples; i++) {
+                    int32_t x0 = (int32_t)(ph >> 16) - 32768; 
+                    x0 += poly_blep(ph, inc);
+                    
+                    int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2) 
+                                - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
+                    int32_t y0 = (int32_t)(acc >> 24);
+                    
+                    y0 -= (y0 >> 9);
+                    if (UNLIKELY(y0 > 262143)) y0 = 262143;
+                    else if (UNLIKELY(y0 < -262143)) y0 = -262143;
+                    
+                    x2 = x1; x1 = x0; y2 = y1; y1 = y0;
+                    
+                    int32_t envSafe = currentEnv >> 14;
+                    envSafe &= ~(envSafe >> 31);
+                    int32_t finalVol = (envSafe * volBase) >> 14;
+                    
+                    mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16);
+                    ph += inc; currentEnv += envStep;
+                }
             }
         }
         

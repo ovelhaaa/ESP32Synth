@@ -62,6 +62,7 @@ ESP32Synth::ESP32Synth() {
         voices[i].streamTrackId = -1;
         voices[i].customWaveFunc = nullptr;
         voices[i].smoothEnv = false; // Default to false for standard notes. Set to true dynamically or via instruments.
+        voices[i].targetBus = 0;
         memset(voices[i].cp, 0, sizeof(voices[i].cp));
     }
 
@@ -74,8 +75,12 @@ ESP32Synth::ESP32Synth() {
         wavetables[i] = {};
         wavetables[i].depth = BITS_8;
     }
-    
 
+    for (int i = 0; i < MAX_BUSES; i++) {
+        busesConfig[i] = {};
+        busesConfig[i].mixLevel = 255;
+    }
+    
     controlRateHz = 100;
     memset(dp, 0, sizeof(dp));
 }
@@ -140,6 +145,37 @@ void ESP32Synth::setCustomOutput(SynthCustomOutputCallback outFunc) {
     _customOutput = outFunc;
 }
 
+void ESP32Synth::setVoiceBus(uint16_t voice, uint8_t busId) {
+    if (voice < MAX_VOICES && busId < MAX_BUSES) {
+        voices[voice].targetBus = busId;
+    }
+}
+
+void ESP32Synth::setBusFX(uint8_t busId, uint8_t slotId, FXType type, SynthCustomFXCallback cb) {
+    if (busId < MAX_BUSES && slotId < MAX_FX_PER_BUS) {
+        FXNode* fx = &busesConfig[busId].fxChain[slotId];
+        fx->type = type;
+        fx->customFXFunc = cb;
+        fx->active = (type != FX_NONE);
+        memset(fx->ep, 0, sizeof(fx->ep));
+        memset(fx->es, 0, sizeof(fx->es));
+        busesConfig[busId].active = true;
+    }
+}
+
+void ESP32Synth::setBusFXParam(uint8_t busId, uint8_t slotId, uint8_t paramId, int16_t value) {
+    if (busId < MAX_BUSES && slotId < MAX_FX_PER_BUS && paramId < SYNTH_FX_PARAMS) {
+        busesConfig[busId].fxChain[slotId].ep[paramId] = value;
+    }
+}
+
+void ESP32Synth::setBusMix(uint8_t busId, uint8_t volume) {
+    if (busId < MAX_BUSES) {
+        busesConfig[busId].mixLevel = volume;
+        busesConfig[busId].active = true;
+    }
+}
+
 const char* ESP32Synth::getChipModel() {
     return SYNTH_CHIP;
 }
@@ -178,18 +214,26 @@ void ESP32Synth::renderLoop() {
     if (blockSamples < 16) blockSamples = 16;
 
     // SIMD SHIELDING: Ensures the block is ALWAYS a multiple of 4.
-    // This prevents loops (v4i32) from writing outside memory if the user uses exotic buffers.
     blockSamples = (blockSamples + 3) & ~3;
 
     int32_t* buf = (int32_t*)heap_caps_aligned_alloc(16, blockSamples * sizeof(int32_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     void* stereoBuf = heap_caps_aligned_alloc(16, blockSamples * 2 * sizeof(int32_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    int32_t* mixBuf = (int32_t*)heap_caps_aligned_alloc(16, blockSamples * sizeof(int32_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
-    if (!buf || !stereoBuf || !mixBuf) {
+    // Multi-Bus Aligned Buffers Allocation
+    int32_t* busBuffers[MAX_BUSES];
+    bool busAllocFailed = false;
+    for (int i = 0; i < MAX_BUSES; i++) {
+        busBuffers[i] = (int32_t*)heap_caps_aligned_alloc(16, blockSamples * sizeof(int32_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!busBuffers[i]) busAllocFailed = true;
+    }
+
+    if (!buf || !stereoBuf || busAllocFailed) {
         _running = false;
         if (buf) heap_caps_free(buf);
         if (stereoBuf) heap_caps_free(stereoBuf);
-        if (mixBuf) heap_caps_free(mixBuf);
+        for (int i = 0; i < MAX_BUSES; i++) {
+            if (busBuffers[i]) heap_caps_free(busBuffers[i]);
+        }
         audioTaskHandle = NULL;
         vTaskDelete(NULL);
         return;
@@ -214,16 +258,15 @@ void ESP32Synth::renderLoop() {
     while (_running) {
         uint32_t start_cycles = esp_cpu_get_cycle_count();
 
-        render(buf, mixBuf, blockSamples);
+        render(buf, busBuffers, blockSamples);
+
         // --- SD RECORDING HOOK ---
         if (UNLIKELY(_isRecording && _recBuffer)) {
             uint32_t h = _recHead;
-            // Verifica espaço com máscara bit a bit (0 divisões)
             uint32_t space = (RECORD_BUF_SAMPLES + _recTail - h - 1) & RECORD_BUF_MASK;
             
-            if (space >= blockSamples) {
+            if (space >= (uint32_t)blockSamples) {
                 if (currentMode == SMODE_I2S && _i2sDepth == I2S_32BIT) {
-                    // Se estivermos em modo bruto 32-bit, converte pra 16-bit na gravação WAV
                     int32_t* b32 = (int32_t*)buf;
                     for (int i = 0; i < blockSamples; i++) {
                         _recBuffer[h] = (int16_t)(b32[i] >> 16);
@@ -231,10 +274,9 @@ void ESP32Synth::renderLoop() {
                     }
                     _recHead = h;
                 } else {
-                    // Standard 16-bit: Cópia contínua na memória de altíssima velocidade
                     int16_t* b16 = (int16_t*)buf;
                     uint32_t tillEnd = RECORD_BUF_SAMPLES - h;
-                    if (blockSamples <= tillEnd) {
+                    if ((uint32_t)blockSamples <= tillEnd) {
                         memcpy((void*)&_recBuffer[h], b16, blockSamples * 2);
                     } else {
                         memcpy((void*)&_recBuffer[h], b16, tillEnd * 2);
@@ -242,8 +284,9 @@ void ESP32Synth::renderLoop() {
                     }
                     _recHead = (h + blockSamples) & RECORD_BUF_MASK;
                 }
-            } // Se o cartão SD travar terrivelmente e o buffer encher, ele vai ignorar o bloco para salvar a polyphony!
+            }
         }
+
         uint32_t end_cycles = esp_cpu_get_cycle_count();
         uint32_t used_cycles = end_cycles - start_cycles;
 
@@ -298,20 +341,16 @@ void ESP32Synth::renderLoop() {
             xSemaphoreTake(pwm_sema, portMAX_DELAY);
             int render_target = 1 - pwm_active_buf;
             int16_t* buf16 = (int16_t*)buf;
-            // CRASH PREVENTION: If RAM ran out during allocation, it just drops the block instead of restarting the chip.
             if (pwm_ping_pong_buf[render_target] != nullptr) {
                 memcpy(pwm_ping_pong_buf[render_target], buf16, blockSamples * sizeof(int16_t));
             }
-
         } else if (currentMode == SMODE_PDM) {
             i2s_channel_write(tx_handle, buf, blockSamples * sizeof(int16_t), &written, portMAX_DELAY);
-
         } else if (currentMode == SMODE_CUSTOM) {
             if (_customOutput) {
                 int16_t* buf16 = (int16_t*)buf;
                 _customOutput(buf16, blockSamples);
 
-                // SMART PACING: Prevents 100% CPU usage in case the user's callback does not block/yield.
                 uint32_t full_cycles = esp_cpu_get_cycle_count() - start_cycles;
                 if (full_cycles < max_cycles_per_block) {
                     uint32_t wait_us = (max_cycles_per_block - full_cycles) / SYNTH_GET_CPU_FREQ_MHZ();
@@ -323,7 +362,6 @@ void ESP32Synth::renderLoop() {
                 }
             }
         } else if (currentMode == SMODE_HEADLESS) {
-            // SMART PACING: Emula a velocidade do I2S mantendo a integridade matemática do tempo real sem hardware!
             uint32_t full_cycles = esp_cpu_get_cycle_count() - start_cycles;
             if (full_cycles < max_cycles_per_block) {
                 uint32_t wait_us = (max_cycles_per_block - full_cycles) / SYNTH_GET_CPU_FREQ_MHZ();
@@ -336,26 +374,22 @@ void ESP32Synth::renderLoop() {
         }
     }
 
+    // Cleanup when task ends
     if (buf) heap_caps_free(buf);
     if (stereoBuf) heap_caps_free(stereoBuf);
-    if (mixBuf) heap_caps_free(mixBuf);
+    for (int i = 0; i < MAX_BUSES; i++) {
+        if (busBuffers[i]) heap_caps_free(busBuffers[i]);
+    }
     audioTaskHandle = NULL;
     vTaskDelete(NULL);
 }
 
 // Core mixer
-void IRAM_ATTR ESP32Synth::render(void* buffer, int32_t* mixBuffer, int samples) {
-    // Zero the aligned buffer ensuring thread safety
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
-    v4i32* vMix = (v4i32*)mixBuffer;
-    v4i32 vZero = {0, 0, 0, 0};
-    int vCount = samples >> 2;
-    for (int i = 0; i < vCount; i++) {
-        vMix[i] = vZero;
+void IRAM_ATTR ESP32Synth::render(void* buffer, int32_t** busBuffers, int samples) {
+    // 1. Zero all buses efficiently
+    for (int b = 0; b < MAX_BUSES; b++) {
+        memset(busBuffers[b], 0, samples * sizeof(int32_t));
     }
-#else
-    memset(mixBuffer, 0, samples * sizeof(int32_t));
-#endif
 
     controlSampleCounter += (uint32_t)samples;
     while (controlSampleCounter >= controlIntervalSamples) {
@@ -363,11 +397,11 @@ void IRAM_ATTR ESP32Synth::render(void* buffer, int32_t* mixBuffer, int samples)
         controlSampleCounter -= controlIntervalSamples;
     }
 
+    // 2. Render voices to their target buses (CPU Cost: O(1) direct pointer access)
     for (int v = 0; v < MAX_VOICES; v++) {
         Voice* vo = &voices[v];
         if (!vo->active) continue;
 
-        // Sub-Block Engine: Fatiamento dinâmico sem prejudicar a performance SIMD
         int samplesRem = samples;
         int bufOffset = 0;
 
@@ -375,11 +409,9 @@ void IRAM_ATTR ESP32Synth::render(void* buffer, int32_t* mixBuffer, int samples)
             int32_t startEnv, envStep;
             int stepSamples = updateAdsrBlock(vo, samplesRem, startEnv, envStep);
 
-            if (startEnv == 0 && vo->currEnvVal == 0 && vo->envState != ENV_ATTACK) {
-                break; // Voz morreu, economiza tempo de CPU
-            }
+            if (startEnv == 0 && vo->currEnvVal == 0 && vo->envState != ENV_ATTACK) break;
 
-            int32_t* currentMixBuf = mixBuffer + bufOffset;
+            int32_t* currentMixBuf = busBuffers[vo->targetBus] + bufOffset;
 
             if (!vo->inst) {
                 switch (vo->type) {
@@ -393,11 +425,9 @@ void IRAM_ATTR ESP32Synth::render(void* buffer, int32_t* mixBuffer, int samples)
             } else {
                 if (vo->currWaveIsBasic) {
                     WaveType dynamicType = (WaveType)vo->currWaveType;
-                    if (dynamicType == WAVE_NOISE) {
-                        renderBlockNoise(vo, currentMixBuf, stepSamples, startEnv, envStep);
-                    } else {
-                        WaveType original = vo->type;
-                        vo->type = dynamicType;
+                    if (dynamicType == WAVE_NOISE) { renderBlockNoise(vo, currentMixBuf, stepSamples, startEnv, envStep); } 
+                    else {
+                        WaveType original = vo->type; vo->type = dynamicType;
                         renderBlockBasic(vo, currentMixBuf, stepSamples, startEnv, envStep);
                         vo->type = original;
                     }
@@ -405,20 +435,53 @@ void IRAM_ATTR ESP32Synth::render(void* buffer, int32_t* mixBuffer, int samples)
                     renderBlockWavetable(vo, currentMixBuf, stepSamples, startEnv, envStep);
                 }
             }
-
             bufOffset += stepSamples;
             samplesRem -= stepSamples;
         }
     }
 
-    if (_customDSP) {
-        _customDSP(mixBuffer, samples, this->dp);
+    // 3. Process FX Chains on isolated buses, then mix down to Master (Bus 0)
+    for (int b = 1; b < MAX_BUSES; b++) {
+        AudioBus* bus = &busesConfig[b];
+        if (!bus->active && bus->mixLevel == 0) continue; 
+
+        // Run FX Chain In-Place
+        for (int f = 0; f < MAX_FX_PER_BUS; f++) {
+            FXNode* fx = &bus->fxChain[f];
+            if (UNLIKELY(fx->active)) {
+                if (fx->type == FX_CUSTOM && fx->customFXFunc) {
+                    fx->customFXFunc(busBuffers[b], samples, fx->ep, fx->es);
+                }
+            }
+        }
+
+        // Mixdown to Bus 0 (Master) utilizing Vectorized processing if S3
+        if (bus->mixLevel > 0) {
+            int32_t mVol = bus->mixLevel;
+            int32_t* src = busBuffers[b];
+            int32_t* dst = busBuffers[0];
+            
+            #if defined(CONFIG_IDF_TARGET_ESP32S3)
+            v4i32 vVol = {mVol, mVol, mVol, mVol};
+            int vCount = samples >> 2;
+            v4i32* vSrc = (v4i32*)src;
+            v4i32* vDst = (v4i32*)dst;
+            for (int i = 0; i < vCount; i++) vDst[i] += (vSrc[i] * vVol) >> 8;
+            #else
+            for (int i = 0; i < samples; i++) dst[i] += (src[i] * mVol) >> 8;
+            #endif
+        }
     }
 
+    // 4. Global Master DSP (Always applied to Bus 0)
+    if (_customDSP) {
+        _customDSP(busBuffers[0], samples, this->dp);
+    }
+
+    // 5. Hardware Output Clipping & Bitcrush (Using Bus 0)
     int32_t mVol = _masterVolume;
     uint32_t mask32 = 0xFFFFFFFFUL;
     uint32_t mask16 = 0xFFFFFFFFUL;
-
     if (_bitcrush > 0) {
         mask32 = (_bitcrush >= 32) ? 0 : (0xFFFFFFFFUL << (32 - _bitcrush));
         mask16 = (_bitcrush >= 16) ? 0 : (0xFFFFFFFFUL << (16 - _bitcrush));
@@ -427,47 +490,40 @@ void IRAM_ATTR ESP32Synth::render(void* buffer, int32_t* mixBuffer, int samples)
     if (currentMode == SMODE_I2S && _i2sDepth == I2S_32BIT) {
         int32_t* buf32 = (int32_t*)buffer;
         int i = 0;
-        
-        // Loop Unrolling x4 (32-bit)
         for (; i <= samples - 4; i += 4) {
-            int64_t val0 = ((int64_t)mixBuffer[i]     * mVol);
-            int64_t val1 = ((int64_t)mixBuffer[i + 1] * mVol);
-            int64_t val2 = ((int64_t)mixBuffer[i + 2] * mVol);
-            int64_t val3 = ((int64_t)mixBuffer[i + 3] * mVol);
-
+            int64_t val0 = ((int64_t)busBuffers[0][i]     * mVol);
+            int64_t val1 = ((int64_t)busBuffers[0][i + 1] * mVol);
+            int64_t val2 = ((int64_t)busBuffers[0][i + 2] * mVol);
+            int64_t val3 = ((int64_t)busBuffers[0][i + 3] * mVol);
             val0 = (val0 > 2147483647LL) ? 2147483647LL : (val0 < -2147483648LL) ? -2147483648LL : val0;
             val1 = (val1 > 2147483647LL) ? 2147483647LL : (val1 < -2147483648LL) ? -2147483648LL : val1;
             val2 = (val2 > 2147483647LL) ? 2147483647LL : (val2 < -2147483648LL) ? -2147483648LL : val2;
             val3 = (val3 > 2147483647LL) ? 2147483647LL : (val3 < -2147483648LL) ? -2147483648LL : val3;
-
             buf32[i]     = (int32_t)val0 & mask32;
             buf32[i + 1] = (int32_t)val1 & mask32;
             buf32[i + 2] = (int32_t)val2 & mask32;
             buf32[i + 3] = (int32_t)val3 & mask32;
         }
         for (; i < samples; i++) {
-            int64_t val = (int64_t)mixBuffer[i] * mVol;
+            int64_t val = (int64_t)busBuffers[0][i] * mVol;
             val = (val > 2147483647LL) ? 2147483647LL : (val < -2147483648LL) ? -2147483648LL : val;
             buf32[i] = (int32_t)val & mask32;
         }
     } else {
         int16_t* buf16 = (int16_t*)buffer;
         int i = 0;
-        
-        // Loop Unrolling x4 + Xtensa Hardware CLAMPS (16-bit)
         for (; i <= samples - 4; i += 4) {
-            int64_t v0 = ((int64_t)mixBuffer[i]     * mVol) >> 16;
-            int64_t v1 = ((int64_t)mixBuffer[i + 1] * mVol) >> 16;
-            int64_t v2 = ((int64_t)mixBuffer[i + 2] * mVol) >> 16;
-            int64_t v3 = ((int64_t)mixBuffer[i + 3] * mVol) >> 16;
-
+            int64_t v0 = ((int64_t)busBuffers[0][i]     * mVol) >> 16;
+            int64_t v1 = ((int64_t)busBuffers[0][i + 1] * mVol) >> 16;
+            int64_t v2 = ((int64_t)busBuffers[0][i + 2] * mVol) >> 16;
+            int64_t v3 = ((int64_t)busBuffers[0][i + 3] * mVol) >> 16;
             buf16[i]     = (int16_t)(hw_clamps16((int32_t)v0) & mask16);
             buf16[i + 1] = (int16_t)(hw_clamps16((int32_t)v1) & mask16);
             buf16[i + 2] = (int16_t)(hw_clamps16((int32_t)v2) & mask16);
             buf16[i + 3] = (int16_t)(hw_clamps16((int32_t)v3) & mask16);
         }
         for (; i < samples; i++) {
-            int64_t v = ((int64_t)mixBuffer[i] * mVol) >> 16;
+            int64_t v = ((int64_t)busBuffers[0][i] * mVol) >> 16;
             buf16[i] = (int16_t)(hw_clamps16((int32_t)v) & mask16);
         }
     }
@@ -717,7 +773,9 @@ void ESP32Synth::generateSamples(int16_t* outBuffer, int numSamples) {
 
     // Extremely fast and safe allocation on local stack, preventing heap fragmentation
     const int CHUNK_SIZE = 128;
-    int32_t mixBuffer[CHUNK_SIZE] __attribute__((aligned(16)));
+    int32_t busMemory[MAX_BUSES][CHUNK_SIZE] __attribute__((aligned(16)));
+    int32_t* busBuffers[MAX_BUSES];
+    for (int i = 0; i < MAX_BUSES; i++) busBuffers[i] = busMemory[i];
     int16_t tempOut[CHUNK_SIZE] __attribute__((aligned(16)));
 
     int samplesRendered = 0;
@@ -730,7 +788,7 @@ void ESP32Synth::generateSamples(int16_t* outBuffer, int numSamples) {
 
         uint32_t start_cycles = esp_cpu_get_cycle_count();
 
-        render(tempOut, mixBuffer, simdRender);
+        render(tempOut, busBuffers, simdRender);
 
         uint32_t used_cycles = esp_cpu_get_cycle_count() - start_cycles;
         uint32_t max_cycles = (SYNTH_GET_CPU_FREQ_MHZ() * 1000000 / _sampleRate) * simdRender;
@@ -746,7 +804,9 @@ void ESP32Synth::generateSamplesStereo(int16_t* outBufferLR, int numSamplePairs)
     if (!outBufferLR || numSamplePairs <= 0 || !_running) return;
 
     const int CHUNK_SIZE = 128;
-    int32_t mixBuffer[CHUNK_SIZE] __attribute__((aligned(16)));
+    int32_t busMemory[MAX_BUSES][CHUNK_SIZE] __attribute__((aligned(16)));
+    int32_t* busBuffers[MAX_BUSES];
+    for (int i = 0; i < MAX_BUSES; i++) busBuffers[i] = busMemory[i];
     int16_t tempOut[CHUNK_SIZE] __attribute__((aligned(16)));
 
     int samplesRendered = 0;
@@ -758,7 +818,7 @@ void ESP32Synth::generateSamplesStereo(int16_t* outBufferLR, int numSamplePairs)
 
         uint32_t start_cycles = esp_cpu_get_cycle_count();
 
-        render(tempOut, mixBuffer, simdRender);
+        render(tempOut, busBuffers, simdRender);
 
         uint32_t used_cycles = esp_cpu_get_cycle_count() - start_cycles;
         uint32_t max_cycles = (SYNTH_GET_CPU_FREQ_MHZ() * 1000000 / _sampleRate) * simdRender;
