@@ -3,7 +3,8 @@
    Float Translator (FLT) & Fixed-Point (FIP) Mathematical Engine for ESP32Synth
    Translates floating-point synthesizer concepts into fast 32-bit integer DSP.
    Format: Q8.24 (8-bit integer, 24-bit fractional). Numerical Range: ~ -128.0 to 127.999
-*/ ====================================================================================
+   ====================================================================================
+*/
 
 /*
     ================================================================================================
