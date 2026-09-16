@@ -146,16 +146,15 @@ public:
     }
 
     // ====================================================================================
-    // DYNAMIC BIQUAD OSCILLATOR (100% Fixed-Point, PolyBLEP Anti-Aliased)
+    // 1. BIQUAD OSCILLATOR: FAST (Direct Form I - Ultra Low CPU, Max Polyphony)
     // ====================================================================================
-    // Replaces standard State Variable Filters (SVF) with a much more stable 
-    // RBJ Biquad Filter implemented in 24-bit fractional fixed-point math.
-    // 
+    // Optimized for maximum voice count (~3.45% CPU/voice).
+    //
     // cp[0]: Wave Type (0 = Saw, 1 = Pulse, 2 = Triangle)
-    // cp[1]: Cutoff Frequency (Hz) [20 a 20000]
-    // cp[2]: Resonance/Q (Q * 100) [Ex: 70 = 0.7, 100 = 1.0, 500 = 5.0]
+    // cp[1]: Cutoff Frequency (Hz) [20 to 20000]
+    // cp[2]: Resonance/Q (Q * 100) [Ex: 70 = 0.7, 100 = 1.0, 450 = 4.5]
     // cp[3]: Filter Mode (0 = LPF, 1 = HPF, 2 = BPF, 3 = Notch)
-static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t startEnv, int32_t envStep) {
+    static void DSP_BiquadOscFast(Voice* vo, int32_t* mixBuffer, int samples, int32_t startEnv, int32_t envStep) {
         int32_t currentEnv = startEnv;
         int32_t volBase = ((uint32_t)vo->vol * vo->trmModGain) >> 8;
         uint32_t ph = vo->phase;
@@ -165,7 +164,7 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
         int16_t waveType = vo->cp[0];
         int32_t fc = vo->cp[1];
         if (fc < 20) fc = 20;
-        if (fc > 20000) fc = 20000;
+        else if (fc > 20000) fc = 20000;
         
         int32_t q_fixed = vo->cp[2];
         if (q_fixed < 10) q_fixed = 10; 
@@ -180,34 +179,34 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
         
         int32_t alpha = (sin_w0 * 50) / q_fixed;
         
-        int32_t _a0 = 32768 + alpha;
-        int32_t _a1 = -2 * cos_w0;
-        int32_t _a2 = 32768 - alpha;
+        int32_t k_a0 = 32768 + alpha;
+        int32_t k_a1 = -2 * cos_w0;
+        int32_t k_a2 = 32768 - alpha;
         
-        int32_t _b0, _b1, _b2;
-        if (filterMode == 1) { // HPF
-            _b1 = -(32768 + cos_w0);
-            _b0 = (32768 + cos_w0) >> 1;
-            _b2 = _b0;
-        } else if (filterMode == 2) { // BPF
-            _b0 = alpha;
-            _b1 = 0;
-            _b2 = -alpha;
-        } else if (filterMode == 3) { // NOTCH
-            _b0 = 32768;
-            _b1 = -2 * cos_w0;
-            _b2 = 32768;
-        } else { // LPF
-            _b1 = 32768 - cos_w0;
-            _b0 = _b1 >> 1;
-            _b2 = _b0;
+        int32_t k_b0, k_b1, k_b2;
+        if (filterMode == 1) {
+            k_b1 = -(32768 + cos_w0);
+            k_b0 = (32768 + cos_w0) >> 1;
+            k_b2 = k_b0;
+        } else if (filterMode == 2) {
+            k_b0 = alpha;
+            k_b1 = 0;
+            k_b2 = -alpha;
+        } else if (filterMode == 3) {
+            k_b0 = 32768;
+            k_b1 = -2 * cos_w0;
+            k_b2 = 32768;
+        } else {
+            k_b1 = 32768 - cos_w0;
+            k_b0 = k_b1 >> 1;
+            k_b2 = k_b0;
         }
         
-        int32_t c_b0 = (int32_t)(((int64_t)_b0 << 24) / _a0);
-        int32_t c_b1 = (int32_t)(((int64_t)_b1 << 24) / _a0);
-        int32_t c_b2 = (int32_t)(((int64_t)_b2 << 24) / _a0);
-        int32_t c_a1 = (int32_t)(((int64_t)_a1 << 24) / _a0);
-        int32_t c_a2 = (int32_t)(((int64_t)_a2 << 24) / _a0);
+        int32_t c_b0 = (int32_t)(((int64_t)k_b0 << 24) / k_a0);
+        int32_t c_b1 = (int32_t)(((int64_t)k_b1 << 24) / k_a0);
+        int32_t c_b2 = (int32_t)(((int64_t)k_b2 << 24) / k_a0);
+        int32_t c_a1 = (int32_t)(((int64_t)k_a1 << 24) / k_a0);
+        int32_t c_a2 = (int32_t)(((int64_t)k_a2 << 24) / k_a0);
         
         int32_t x1 = (int32_t)vo->cw[0];
         int32_t x2 = (int32_t)vo->cw[1];
@@ -223,7 +222,7 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
             envSafe &= ~(envSafe >> 31);
             int32_t finalVol = (envSafe * volBase) >> 14;
 
-            if (waveType == 1) { // PULSE
+            if (waveType == 1) {
                 for (int i = 0; i < samples; i++) {
                     int32_t x0 = (ph < pw) ? 32767 : -32768;
                     x0 -= poly_blep(ph, inc);
@@ -241,7 +240,7 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
                     mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16); 
                     ph += inc;
                 }
-            } else if (waveType == 2) { // TRIANGLE
+            } else if (waveType == 2) {
                 for (int i = 0; i < samples; i++) {
                     int16_t saw = (int16_t)(ph >> 16);
                     int32_t x0 = (int32_t)(((saw ^ (saw >> 15)) * 2) - 32767);
@@ -258,7 +257,7 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
                     mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16);
                     ph += inc;
                 }
-            } else { // SAWTOOTH
+            } else {
                 for (int i = 0; i < samples; i++) {
                     int32_t x0 = (int32_t)(ph >> 16) - 32768; 
                     x0 += poly_blep(ph, inc);
@@ -277,7 +276,7 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
                 }
             }
         } else {
-            if (waveType == 1) { // PULSE
+            if (waveType == 1) {
                 for (int i = 0; i < samples; i++) {
                     int32_t x0 = (ph < pw) ? 32767 : -32768;
                     x0 -= poly_blep(ph, inc);
@@ -292,7 +291,6 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
                     else if (UNLIKELY(y0 < -262143)) y0 = -262143;
                     
                     x2 = x1; x1 = x0; y2 = y1; y1 = y0;
-                    
                     int32_t envSafe = currentEnv >> 14;
                     envSafe &= ~(envSafe >> 31);
                     int32_t finalVol = (envSafe * volBase) >> 14;
@@ -300,7 +298,7 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
                     mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16); 
                     ph += inc; currentEnv += envStep;
                 }
-            } else if (waveType == 2) { // TRIANGLE
+            } else if (waveType == 2) {
                 for (int i = 0; i < samples; i++) {
                     int16_t saw = (int16_t)(ph >> 16);
                     int32_t x0 = (int32_t)(((saw ^ (saw >> 15)) * 2) - 32767);
@@ -314,15 +312,14 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
                     else if (UNLIKELY(y0 < -262143)) y0 = -262143;
                     
                     x2 = x1; x1 = x0; y2 = y1; y1 = y0;
-                    
                     int32_t envSafe = currentEnv >> 14;
                     envSafe &= ~(envSafe >> 31);
                     int32_t finalVol = (envSafe * volBase) >> 14;
                     
-                    mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16);
+                    mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16); 
                     ph += inc; currentEnv += envStep;
                 }
-            } else { // SAWTOOTH
+            } else {
                 for (int i = 0; i < samples; i++) {
                     int32_t x0 = (int32_t)(ph >> 16) - 32768; 
                     x0 += poly_blep(ph, inc);
@@ -336,12 +333,11 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
                     else if (UNLIKELY(y0 < -262143)) y0 = -262143;
                     
                     x2 = x1; x1 = x0; y2 = y1; y1 = y0;
-                    
                     int32_t envSafe = currentEnv >> 14;
                     envSafe &= ~(envSafe >> 31);
                     int32_t finalVol = (envSafe * volBase) >> 14;
                     
-                    mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16);
+                    mixBuffer[i] += (int32_t)(((int64_t)y0 * finalVol) >> 16); 
                     ph += inc; currentEnv += envStep;
                 }
             }
@@ -352,6 +348,186 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
         vo->cw[1] = (uint32_t)x2;
         vo->cw[2] = (uint32_t)y1;
         vo->cw[3] = (uint32_t)y2;
+    }
+
+    // ====================================================================================
+    // 2. BIQUAD OSCILLATOR: HIGH-PRECISION (TDF-II Q28 - Studio Quality, Zero Drift)
+    // ====================================================================================
+    // Full 20 Hz to 20000 Hz precision with 64-bit internal states (~4.35% CPU/voice).
+    //
+    // cp[0]: Wave Type (0 = Saw, 1 = Pulse, 2 = Triangle)
+    // cp[1]: Cutoff Frequency (Hz) [20 to 20000]
+    // cp[2]: Resonance/Q (Q * 100) [Ex: 70 = 0.7, 100 = 1.0, 450 = 4.5]
+    // cp[3]: Filter Mode (0 = LPF, 1 = HPF, 2 = BPF, 3 = Notch)
+    static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t startEnv, int32_t envStep) {
+        int32_t currentEnv = startEnv;
+        int32_t volBase = ((uint32_t)vo->vol * vo->trmModGain) >> 8;
+        uint32_t ph = vo->phase;
+        uint32_t inc = vo->phaseInc + vo->vibOffset;
+        uint32_t pw = vo->pulseWidth;
+
+        int16_t waveType = vo->cp[0];
+        int32_t fc = vo->cp[1];
+        if (fc < 20) fc = 20;
+        else if (fc > 20000) fc = 20000;
+
+        int32_t q_fixed = vo->cp[2];
+        if (q_fixed < 10) q_fixed = 10;
+
+        int16_t filterMode = vo->cp[3];
+
+        int32_t sin_q28, cos_q28, omc_q28;
+
+        if (fc < 350) {
+            int32_t w0_q24 = fc * 2195;
+            int32_t w0_sq_q24 = (int32_t)(((int64_t)w0_q24 * w0_q24) >> 24);
+            int32_t w0_quad_q24 = (int32_t)(((int64_t)w0_sq_q24 * w0_sq_q24) >> 24);
+
+            omc_q28 = (w0_sq_q24 << 3) - (int32_t)(((int64_t)w0_quad_q24 * 8) / 24);
+            cos_q28 = (1 << 28) - omc_q28;
+
+            int32_t w0_cube_q24 = (int32_t)(((int64_t)w0_q24 * w0_sq_q24) >> 24);
+            sin_q28 = (w0_q24 << 4) - (int32_t)(((int64_t)w0_cube_q24 * 16) / 6);
+        } else {
+            uint32_t ph_fixed = (uint32_t)(((uint64_t)fc * 5726623ULL) >> 10);
+            uint32_t idx = (ph_fixed >> 16) & SINE_LUT_MASK;
+            uint32_t frac = ph_fixed & 0xFFFF;
+
+            int32_t s0_val = sineLUT[idx];
+            int32_t s1_val = sineLUT[(idx + 1) & SINE_LUT_MASK];
+            int32_t sin_interp = s0_val + (int32_t)(((int64_t)(s1_val - s0_val) * frac) >> 16);
+            sin_q28 = sin_interp << 13;
+
+            uint32_t idx_c = (idx + (SINE_LUT_SIZE / 4)) & SINE_LUT_MASK;
+            int32_t c0_val = sineLUT[idx_c];
+            int32_t c1_val = sineLUT[(idx_c + 1) & SINE_LUT_MASK];
+            int32_t cos_interp = c0_val + (int32_t)(((int64_t)(c1_val - c0_val) * frac) >> 16);
+            cos_q28 = cos_interp << 13;
+            omc_q28 = (1 << 28) - cos_q28;
+        }
+
+        int32_t alpha_q28 = (int32_t)(((int64_t)sin_q28 * 50) / q_fixed);
+        if (alpha_q28 < 1) alpha_q28 = 1;
+
+        int32_t k_a0 = (1 << 28) + alpha_q28;
+        int32_t k_a2 = (1 << 28) - alpha_q28;
+
+        int32_t k_b0, k_b1, k_b2;
+        int64_t a1_val = -((int64_t)cos_q28 << 1);
+
+        if (filterMode == 1) {
+            int32_t one_p_cos = (1 << 28) + cos_q28;
+            k_b0 = one_p_cos >> 1;
+            k_b1 = -one_p_cos;
+            k_b2 = k_b0;
+        } else if (filterMode == 2) {
+            k_b0 = alpha_q28;
+            k_b1 = 0;
+            k_b2 = -alpha_q28;
+        } else if (filterMode == 3) {
+            k_b0 = (1 << 28);
+            k_b1 = (int32_t)a1_val;
+            k_b2 = k_b0;
+        } else {
+            k_b0 = omc_q28 >> 1;
+            k_b1 = omc_q28;
+            k_b2 = k_b0;
+        }
+
+        int32_t c_b0 = (int32_t)(((int64_t)k_b0 << 28) / k_a0);
+        int32_t c_b1 = (int32_t)(((int64_t)k_b1 << 28) / k_a0);
+        int32_t c_b2 = (int32_t)(((int64_t)k_b2 << 28) / k_a0);
+        int32_t c_a1 = (int32_t)((a1_val << 28) / k_a0);
+        int32_t c_a2 = (int32_t)(((int64_t)k_a2 << 28) / k_a0);
+
+        int64_t s1 = *(int64_t*)&vo->cw[0];
+        int64_t s2 = *(int64_t*)&vo->cw[2];
+
+        if (startEnv < 16384 && vo->envState == ENV_ATTACK) {
+            s1 = 0; s2 = 0;
+        }
+
+        if (envStep == 0) {
+            int32_t envSafe = currentEnv >> 14;
+            envSafe &= ~(envSafe >> 31);
+            int32_t finalVol = (envSafe * volBase) >> 14;
+
+            for (int i = 0; i < samples; i++) {
+                int32_t x0;
+                if (waveType == 1) {
+                    x0 = (ph < pw) ? 32767 : -32768;
+                    x0 -= poly_blep(ph, inc);
+                    x0 += poly_blep((uint32_t)(ph - pw), inc);
+                } else if (waveType == 2) {
+                    int16_t saw = (int16_t)(ph >> 16);
+                    x0 = (int32_t)(((saw ^ (saw >> 15)) * 2) - 32767);
+                } else {
+                    x0 = (int32_t)(ph >> 16) - 32768;
+                    x0 += poly_blep(ph, inc);
+                }
+
+                int64_t y_scaled = (int64_t)c_b0 * x0 + s1;
+                int32_t y_int = (int32_t)(y_scaled >> 28);
+                int32_t y_frac = (int32_t)(y_scaled & 0x0FFFFFFF);
+
+                if (UNLIKELY(y_int > 262143)) { y_int = 262143; y_frac = 0; }
+                else if (UNLIKELY(y_int < -262143)) { y_int = -262143; y_frac = 0; }
+
+                int64_t fb_a1 = ((int64_t)c_a1 * y_int) + (((int64_t)c_a1 * y_frac) >> 28);
+                int64_t fb_a2 = ((int64_t)c_a2 * y_int) + (((int64_t)c_a2 * y_frac) >> 28);
+
+                s1 = ((int64_t)c_b1 * x0) - fb_a1 + s2;
+                s2 = ((int64_t)c_b2 * x0) - fb_a2;
+
+                mixBuffer[i] += (int32_t)(((int64_t)y_int * finalVol) >> 16);
+                ph += inc;
+            }
+        } else {
+            for (int i = 0; i < samples; i++) {
+                int32_t x0;
+                if (waveType == 1) {
+                    x0 = (ph < pw) ? 32767 : -32768;
+                    x0 -= poly_blep(ph, inc);
+                    x0 += poly_blep((uint32_t)(ph - pw), inc);
+                } else if (waveType == 2) {
+                    int16_t saw = (int16_t)(ph >> 16);
+                    x0 = (int32_t)(((saw ^ (saw >> 15)) * 2) - 32767);
+                } else {
+                    x0 = (int32_t)(ph >> 16) - 32768;
+                    x0 += poly_blep(ph, inc);
+                }
+
+                int64_t y_scaled = (int64_t)c_b0 * x0 + s1;
+                int32_t y_int = (int32_t)(y_scaled >> 28);
+                int32_t y_frac = (int32_t)(y_scaled & 0x0FFFFFFF);
+
+                if (UNLIKELY(y_int > 262143)) { y_int = 262143; y_frac = 0; }
+                else if (UNLIKELY(y_int < -262143)) { y_int = -262143; y_frac = 0; }
+
+                int64_t fb_a1 = ((int64_t)c_a1 * y_int) + (((int64_t)c_a1 * y_frac) >> 28);
+                int64_t fb_a2 = ((int64_t)c_a2 * y_int) + (((int64_t)c_a2 * y_frac) >> 28);
+
+                s1 = ((int64_t)c_b1 * x0) - fb_a1 + s2;
+                s2 = ((int64_t)c_b2 * x0) - fb_a2;
+
+                int32_t envSafe = currentEnv >> 14;
+                envSafe &= ~(envSafe >> 31);
+                int32_t finalVol = (envSafe * volBase) >> 14;
+
+                mixBuffer[i] += (int32_t)(((int64_t)y_int * finalVol) >> 16);
+                ph += inc;
+                currentEnv += envStep;
+            }
+        }
+
+        vo->phase = ph;
+        *(int64_t*)&vo->cw[0] = s1;
+        *(int64_t*)&vo->cw[2] = s2;
+    }
+
+    // High-Precision Alias for explicit naming
+    static inline void DSP_BiquadOscHQ(Voice* vo, int32_t* mixBuffer, int samples, int32_t startEnv, int32_t envStep) {
+        DSP_BiquadOsc(vo, mixBuffer, samples, startEnv, envStep);
     }
 
     static void FM_Custom(Voice* vo, int32_t* mixBuffer, int samples, int32_t startEnv, int32_t envStep) {
@@ -666,5 +842,259 @@ static void DSP_BiquadOsc(Voice* vo, int32_t* mixBuffer, int samples, int32_t st
 
             mixBuffer[i] = (smp * 180) >> 8;
         }
+    }
+
+    // ====================================================================================
+    // PRE-MADE CUSTOM EFFECTS (Custom FX Hooks)
+    // ====================================================================================
+
+    // ====================================================================================
+    // MODULAR CFX: PURE BIQUAD TDF-II FILTER
+    // ====================================================================================
+    // Pure bus filter slot. Zero oscillators, pure in-place audio filtering.
+    //
+    // ep[0]: Cutoff / Center Frequency (Hz) [20 to 20000]
+    // ep[1]: Filter Mode (0 = LPF, 1 = HPF, 2 = BPF, 3 = Notch)
+    // ep[2]: Resonance (Q * 100) OR Bandwidth in Hz
+    // ep[3]: Unit Mode:
+    //        0 = Standard Q mode (ep[2] is Q * 100, ex: 70 = 0.707, 100 = 1.0, 450 = 4.5)
+    //        1 = Bandwidth in Hz mode (ep[2] is BW in Hz, ex: 60 = 60Hz, 200 = 200Hz)
+    // ep[4]: Dry/Wet Mix (0 or 255 = 100% Wet, 1 to 254 = Dry/Wet blend)
+    static void FX_BiquadFilter(int32_t* busBuffer, int samples, int16_t* ep, int32_t* es) {
+        int32_t fc = ep[0];
+        if (fc < 20) fc = 20;
+        else if (fc > 20000) fc = 20000;
+
+        int16_t filterMode = ep[1];
+        int32_t q_param = ep[2];
+        int16_t bwMode = ep[3];
+        int16_t mix = ep[4];
+        if (mix <= 0 || mix > 255) mix = 255;
+
+        int32_t sin_q28, cos_q28, omc_q28;
+
+        if (fc < 350) {
+            int32_t w0_q24 = fc * 2195;
+            int32_t w0_sq_q24 = (int32_t)(((int64_t)w0_q24 * w0_q24) >> 24);
+            int32_t w0_quad_q24 = (int32_t)(((int64_t)w0_sq_q24 * w0_sq_q24) >> 24);
+
+            omc_q28 = (w0_sq_q24 << 3) - (int32_t)(((int64_t)w0_quad_q24 * 8) / 24);
+            cos_q28 = (1 << 28) - omc_q28;
+
+            int32_t w0_cube_q24 = (int32_t)(((int64_t)w0_q24 * w0_sq_q24) >> 24);
+            sin_q28 = (w0_q24 << 4) - (int32_t)(((int64_t)w0_cube_q24 * 16) / 6);
+        } else {
+            uint32_t ph_fixed = (uint32_t)(((uint64_t)fc * 5726623ULL) >> 10);
+            uint32_t idx = (ph_fixed >> 16) & SINE_LUT_MASK;
+            uint32_t frac = ph_fixed & 0xFFFF;
+
+            int32_t s0_val = sineLUT[idx];
+            int32_t s1_val = sineLUT[(idx + 1) & SINE_LUT_MASK];
+            int32_t sin_interp = s0_val + (int32_t)(((int64_t)(s1_val - s0_val) * frac) >> 16);
+            sin_q28 = sin_interp << 13;
+
+            uint32_t idx_c = (idx + (SINE_LUT_SIZE / 4)) & SINE_LUT_MASK;
+            int32_t c0_val = sineLUT[idx_c];
+            int32_t c1_val = sineLUT[(idx_c + 1) & SINE_LUT_MASK];
+            int32_t cos_interp = c0_val + (int32_t)(((int64_t)(c1_val - c0_val) * frac) >> 16);
+            cos_q28 = cos_interp << 13;
+            omc_q28 = (1 << 28) - cos_q28;
+        }
+
+        int32_t alpha_q28;
+        if (bwMode == 1) {
+            int32_t bw_hz = (q_param < 1) ? 1 : q_param;
+            alpha_q28 = (int32_t)(((int64_t)sin_q28 * bw_hz) / ((int64_t)fc << 1));
+        } else {
+            int32_t q_fixed = (q_param < 10) ? 10 : q_param;
+            alpha_q28 = (int32_t)(((int64_t)sin_q28 * 50) / q_fixed);
+        }
+        if (alpha_q28 < 1) alpha_q28 = 1;
+
+        int32_t k_a0 = (1 << 28) + alpha_q28;
+        int32_t k_a2 = (1 << 28) - alpha_q28;
+
+        int32_t k_b0, k_b1, k_b2;
+        int64_t a1_val = -((int64_t)cos_q28 << 1);
+
+        if (filterMode == 1) {
+            int32_t one_p_cos = (1 << 28) + cos_q28;
+            k_b0 = one_p_cos >> 1;
+            k_b1 = -one_p_cos;
+            k_b2 = k_b0;
+        } else if (filterMode == 2) {
+            k_b0 = alpha_q28;
+            k_b1 = 0;
+            k_b2 = -alpha_q28;
+        } else if (filterMode == 3) {
+            k_b0 = (1 << 28);
+            k_b1 = (int32_t)a1_val;
+            k_b2 = k_b0;
+        } else {
+            k_b0 = omc_q28 >> 1;
+            k_b1 = omc_q28;
+            k_b2 = k_b0;
+        }
+
+        int32_t c_b0 = (int32_t)(((int64_t)k_b0 << 28) / k_a0);
+        int32_t c_b1 = (int32_t)(((int64_t)k_b1 << 28) / k_a0);
+        int32_t c_b2 = (int32_t)(((int64_t)k_b2 << 28) / k_a0);
+        int32_t c_a1 = (int32_t)((a1_val << 28) / k_a0);
+        int32_t c_a2 = (int32_t)(((int64_t)k_a2 << 28) / k_a0);
+
+        int64_t s1 = *(int64_t*)&es[0];
+        int64_t s2 = *(int64_t*)&es[2];
+
+        if (mix == 255) {
+            for (int i = 0; i < samples; i++) {
+                int32_t x0 = busBuffer[i];
+                int64_t y_scaled = (int64_t)c_b0 * x0 + s1;
+                int32_t y_int = (int32_t)(y_scaled >> 28);
+                int32_t y_frac = (int32_t)(y_scaled & 0x0FFFFFFF);
+
+                if (UNLIKELY(y_int > 262143)) { y_int = 262143; y_frac = 0; }
+                else if (UNLIKELY(y_int < -262143)) { y_int = -262143; y_frac = 0; }
+
+                int64_t fb_a1 = ((int64_t)c_a1 * y_int) + (((int64_t)c_a1 * y_frac) >> 28);
+                int64_t fb_a2 = ((int64_t)c_a2 * y_int) + (((int64_t)c_a2 * y_frac) >> 28);
+
+                s1 = ((int64_t)c_b1 * x0) - fb_a1 + s2;
+                s2 = ((int64_t)c_b2 * x0) - fb_a2;
+
+                busBuffer[i] = y_int;
+            }
+        } else {
+            for (int i = 0; i < samples; i++) {
+                int32_t x0 = busBuffer[i];
+                int64_t y_scaled = (int64_t)c_b0 * x0 + s1;
+                int32_t y_int = (int32_t)(y_scaled >> 28);
+                int32_t y_frac = (int32_t)(y_scaled & 0x0FFFFFFF);
+
+                if (UNLIKELY(y_int > 262143)) { y_int = 262143; y_frac = 0; }
+                else if (UNLIKELY(y_int < -262143)) { y_int = -262143; y_frac = 0; }
+
+                int64_t fb_a1 = ((int64_t)c_a1 * y_int) + (((int64_t)c_a1 * y_frac) >> 28);
+                int64_t fb_a2 = ((int64_t)c_a2 * y_int) + (((int64_t)c_a2 * y_frac) >> 28);
+
+                s1 = ((int64_t)c_b1 * x0) - fb_a1 + s2;
+                s2 = ((int64_t)c_b2 * x0) - fb_a2;
+
+                busBuffer[i] = x0 + (((y_int - x0) * mix) >> 8);
+            }
+        }
+
+        *(int64_t*)&es[0] = s1;
+        *(int64_t*)&es[2] = s2;
+    }
+    
+    // ====================================================================================
+    // MODULAR CFX: FAST BIQUAD FILTER (Direct Form I - Ultra Low CPU)
+    // ====================================================================================
+    // Fast bus filter slot based on Direct Form I topology for maximum CPU efficiency.
+    //
+    // ep[0]: Cutoff / Center Frequency (Hz) [20 to 20000]
+    // ep[1]: Filter Mode (0 = LPF, 1 = HPF, 2 = BPF, 3 = Notch)
+    // ep[2]: Resonance (Q * 100) OR Bandwidth in Hz
+    // ep[3]: Unit Mode:
+    //        0 = Standard Q mode (ep[2] is Q * 100, ex: 70 = 0.7, 100 = 1.0, 450 = 4.5)
+    //        1 = Bandwidth in Hz mode (ep[2] is BW in Hz, ex: 50 = 50Hz, 200 = 200Hz)
+    // ep[4]: Dry/Wet Mix (0 or 255 = 100% Wet, 1 to 254 = Dry/Wet blend)
+    static void FX_BiquadFilterFast(int32_t* busBuffer, int samples, int16_t* ep, int32_t* es) {
+        int32_t fc = ep[0];
+        if (fc < 20) fc = 20;
+        else if (fc > 20000) fc = 20000;
+
+        int16_t filterMode = ep[1];
+        int32_t q_param = ep[2];
+        int16_t bwMode = ep[3];
+        int16_t mix = ep[4];
+        if (mix <= 0 || mix > 255) mix = 255;
+
+        int32_t idx = (fc * 32) / 375;
+        if (idx > 2047) idx = 2047;
+
+        int32_t sin_w0 = sineLUT[idx];
+        int32_t cos_w0 = sineLUT[(idx + 1024) & 4095];
+
+        int32_t alpha;
+        if (bwMode == 1) {
+            int32_t bw_hz = (q_param < 1) ? 1 : q_param;
+            alpha = (int32_t)(((int64_t)sin_w0 * bw_hz) / ((int64_t)fc << 1));
+        } else {
+            int32_t q_fixed = (q_param < 10) ? 10 : q_param;
+            alpha = (sin_w0 * 50) / q_fixed;
+        }
+        if (alpha < 1) alpha = 1;
+
+        int32_t k_a0 = 32768 + alpha;
+        int32_t k_a1 = -2 * cos_w0;
+        int32_t k_a2 = 32768 - alpha;
+
+        int32_t k_b0, k_b1, k_b2;
+        if (filterMode == 1) {
+            k_b1 = -(32768 + cos_w0);
+            k_b0 = (32768 + cos_w0) >> 1;
+            k_b2 = k_b0;
+        } else if (filterMode == 2) {
+            k_b0 = alpha;
+            k_b1 = 0;
+            k_b2 = -alpha;
+        } else if (filterMode == 3) {
+            k_b0 = 32768;
+            k_b1 = -2 * cos_w0;
+            k_b2 = 32768;
+        } else {
+            k_b1 = 32768 - cos_w0;
+            k_b0 = k_b1 >> 1;
+            k_b2 = k_b0;
+        }
+
+        int32_t c_b0 = (int32_t)(((int64_t)k_b0 << 24) / k_a0);
+        int32_t c_b1 = (int32_t)(((int64_t)k_b1 << 24) / k_a0);
+        int32_t c_b2 = (int32_t)(((int64_t)k_b2 << 24) / k_a0);
+        int32_t c_a1 = (int32_t)(((int64_t)k_a1 << 24) / k_a0);
+        int32_t c_a2 = (int32_t)(((int64_t)k_a2 << 24) / k_a0);
+
+        int32_t x1 = es[0];
+        int32_t x2 = es[1];
+        int32_t y1 = es[2];
+        int32_t y2 = es[3];
+
+        if (mix == 255) {
+            for (int i = 0; i < samples; i++) {
+                int32_t x0 = busBuffer[i];
+                int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2)
+                            - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
+                int32_t y0 = (int32_t)(acc >> 24);
+
+                y0 -= (y0 >> 9);
+                if (UNLIKELY(y0 > 262143)) y0 = 262143;
+                else if (UNLIKELY(y0 < -262143)) y0 = -262143;
+
+                x2 = x1; x1 = x0;
+                y2 = y1; y1 = y0;
+                busBuffer[i] = y0;
+            }
+        } else {
+            for (int i = 0; i < samples; i++) {
+                int32_t x0 = busBuffer[i];
+                int64_t acc = ((int64_t)c_b0 * x0) + ((int64_t)c_b1 * x1) + ((int64_t)c_b2 * x2)
+                            - ((int64_t)c_a1 * y1) - ((int64_t)c_a2 * y2);
+                int32_t y0 = (int32_t)(acc >> 24);
+
+                y0 -= (y0 >> 9);
+                if (UNLIKELY(y0 > 262143)) y0 = 262143;
+                else if (UNLIKELY(y0 < -262143)) y0 = -262143;
+
+                x2 = x1; x1 = x0;
+                y2 = y1; y1 = y0;
+                busBuffer[i] = x0 + (((y0 - x0) * mix) >> 8);
+            }
+        }
+
+        es[0] = x1;
+        es[1] = x2;
+        es[2] = y1;
+        es[3] = y2;
     }
 };

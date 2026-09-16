@@ -42,7 +42,7 @@
 #define STREAM_BUF_SAMPLES 2048 // Ring buffer size (Must be power of 2).
 // */
 
- /* // Low RAM usage (for LVGL or other high-memory libs / tasks):
+ /* // bare minimum / Low RAM usage (for LVGL or other high-memory libs / tasks):
 #define MAX_VOICES         1
 #define MAX_WAVETABLES     1
 #define MAX_SAMPLES        1
@@ -84,7 +84,7 @@
 #endif
 
 #ifndef SYNTH_FX_PARAMS
-#define SYNTH_FX_PARAMS   6  // Effect Parameters array size (ep)
+#define SYNTH_FX_PARAMS   8  // Effect Parameters array size (ep)
 #endif
 
 #ifndef SYNTH_FX_STATES
@@ -114,7 +114,7 @@
 
     [You have an audio analyzer in mind] LEN: 64 | COUNT: 2 (Impressive!)
 
-    It's a joke, please don't take it seriously (works but low polyphony, not recommended):
+    It's a joke, please don't take it seriously (works but possible low polyphony, not recommended):
     [You have something against the ESP32's CPU] LEN: 32 | COUNT: 2 (ESP32: "INCREASE THE BUFFER, THIS IS TORTURE!!!")
     [You want to see the limits of the ESP32]    LEN: 16 | COUNT: 2 ("Results are in and your ESP32 is in a coma.")
 */
@@ -129,7 +129,7 @@
 
 // Core Task Pinning
 #define SYNTH_SD_TASK_CORE 0 //If any library conflicts, for compatibility with other ESP32s, etc.
-#define SYNTH_AUDIO_TASK_CORE 1 //If any library conflicts, for compatibility with other ESP32s, etc. <-- Not recommended to change
+#define SYNTH_AUDIO_TASK_CORE 1 //If any library conflicts, for compatibility with other ESP32s, etc. <-- Not *recommended* to change
 
 /* 
   ====================================================================================
